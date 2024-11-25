@@ -1,0 +1,2161 @@
+# These are functions utilized to implement the AJDN method, as well as various functions
+# used to conduct simulation studies for AJDN. These are meant to be loaded into R
+# using the source('AJDNHelperFunctions.R') command.
+#
+# These are all packages that are used for simulations in AJDNDraftSimsFinal, 
+# therefore they are a superset of the packages used in the below code
+# all packages used
+# library(MASS) 
+# library(foreach)
+# library(doParallel)
+# library(Matrix)
+# library(xtable)
+# library(plyr)
+# library(gridExtra)
+# library(grid)
+# library(ggplot2)
+# library(ts.extend)
+# library(InspectChangepoint)
+# library(hdbinseg)
+# library(gtools)
+# library(bigstatsr)
+# library(KernSmooth)
+
+#### HYPERPARAMETERS ####
+
+# In second stage refinement, need to define \tilde{\alpha}, which is related
+# to how large a window to consider for detecting the changepoint
+ss_refine_alpha_tilde=1.5
+
+# Once a changepoint is detected, a region of \hat{t}+-(1+C)\bar{s}_r is deleted
+# around the changepoint (i.e. so do not detect another CP in that region)
+cp_delete_c=.01
+
+# This epsilon is used in determining the sparse sequence of scales
+epsilon = .51
+
+#### FUNCTIONS FOR GENERATING SIMULATED NOISE ####
+
+generate_x_matrix<-function(n,p,dgp,s,x_matrix_split=NULL){
+  # This function takes a few inputs and outputs a matrix of time series
+  # of appropriate dimension, length, and type
+  # INPUTS
+  # n                           - length of time series
+  # p                           - number of dimensions
+  # dgp                         - the type of data generating process we are simulating
+  # x_matrix_split              - an optional argument, if TRUE, then return a list
+  #                               with first argument noise matrix, second argument mean matrix
+  
+  # OUTPUTS
+  # noise_matrix   - a matrix of the random noise
+  # mean_matrix    - a matrix of the means
+  
+  mean_matrix=matrix(data=rep(0,n*p),nrow=p,ncol=n) 
+  
+  # Generate X matrix according to data generating processes
+  if(dgp=='IID'){
+    # IID normal, independent dimensions
+    noise_matrix = matrix(data=rnorm(n*p),ncol=n)
+  }else if(dgp=='IIDT'){
+    noise_matrix = generate_x_matrix(n,p,'IID',s)
+    mean_matrix =  generate_means(noise_matrix,s)    
+  }else if(dgp=='GS'){
+    # AR(1) processes, independent dimensions
+    noise_matrix = matrix(data=rep(0,n*p),nrow=p,ncol=n)
+    for(i in 1:p){
+      innovations=rnorm(n+1)
+      noise_matrix[i,1]=innovations[2]+0.25*innovations[1]
+      for(j in 2:n){
+        noise_matrix[i,j]=innovations[j+1]+0.25*noise_matrix[i,j-1]  
+      }
+    }
+  }else if(dgp=='GST'){
+    noise_matrix = generate_x_matrix(n,p,'GS',s)
+    mean_matrix =  generate_means(noise_matrix,s)
+  }else if(dgp=='PS'){
+    # VMA(3) process with jump in variance
+    sd_jump=2
+    rho=.5
+    ma_coef=c(.5,0,.5)
+    q=length(ma_coef)
+    
+    noise_matrix=matrix(data=0,nrow=p,ncol=n)
+    
+    # Here create an equicorrelation matrix for first half, and then one
+    # with twice the variance in second half
+    cov_matrix_1=matrix(data=rho,nrow=p,ncol=p) 
+    diag(cov_matrix_1)=1
+    cov_matrix_2=diag(rep(sd_jump,p))%*%cov_matrix_1%*%diag(rep(sd_jump,p))
+
+    eigen_1=eigen(cov_matrix_1)
+    eigen_2=eigen(cov_matrix_2)
+    
+    cov_matrix_1_sqrt=eigen_1$vectors%*%diag(sqrt(eigen_1$values))
+    cov_matrix_2_sqrt=eigen_2$vectors%*%diag(sqrt(eigen_2$values))
+    
+    innovations=matrix(data=runif((n+q)*p,min=-1*sqrt(12)/2,max=sqrt(12)/2),nrow=p,ncol=(n+q))
+    innovations[,1:(round(n/2)+q)]=cov_matrix_1_sqrt%*%innovations[,1:(round(n/2)+q)]
+    innovations[,(round(n/2)+q+1):(n+q)]=cov_matrix_2_sqrt%*%innovations[,(round(n/2)+q+1):(n+q)]
+    
+    for(l in 1:n){
+      noise_matrix[,l]=innovations[,l+q]
+      for(m in 1:q){
+        noise_matrix[,l]=noise_matrix[,l]+innovations[,l+q-m]*ma_coef[m]
+      } 
+    }  
+    
+  }else if(dgp=='PST'){
+    noise_matrix = generate_x_matrix(n,p,'PS',s)
+    mean_matrix =  generate_means(noise_matrix,s)  
+  }else if(dgp=='LS'){
+    # VAR(1) model with time varying coefficients
+    rho=.5
+    ar_coefs=.25
+    coef_structure='x'
+    sin_cycles=1
+    
+    # create coefficient matrix
+    coef_matrix=matrix(data=0,nrow=p,ncol=p)
+    diag(coef_matrix)=rep(ar_coefs,p)
+    if(coef_structure=='x'){
+      for(i in 1:p){
+        coef_matrix[p-i+1,i]=ar_coefs
+      }
+    }else if(coef_structure=='line'){
+      for(i in 1:(p-1)){
+        coef_matrix[i,i+1]=ar_coefs
+      }
+    }
+    
+    # Create the covariance matrix - Kac-Murdock-Szego
+    cov_matrix=matrix(data=0,nrow=p,ncol=p)
+    for(ii in 1:p){
+      for(jj in 1:p){
+        cov_matrix[ii,jj]=rho**(abs(ii-jj))
+      }
+    }
+    eigen_decomp=eigen(cov_matrix)
+    cov_matrix_sqrt=eigen_decomp$vectors%*%diag(sqrt(eigen_decomp$values))
+    
+    # Create the sin coefficients that will be used to make the coefficient matrix time varying
+    sin_coefs=(sin(((1:n)/n)*2*pi*sin_cycles)+1)/2
+    
+    noise_matrix=matrix(data=0,nrow=p,ncol=n)
+    
+    # Create a matrix of innovations
+    innovations_matrix=matrix(data=rbinom((n+1)*p,10,.3)-3,nrow=p,ncol=n+1)
+    x_0=cov_matrix_sqrt%*%innovations_matrix[,1]
+    noise_matrix[,1]=(coef_matrix*sin_coefs[1])%*%x_0+cov_matrix_sqrt%*%innovations_matrix[,2]
+    
+    for(ii in 2:n){
+      noise_matrix[,ii]=(coef_matrix*sin_coefs[ii])%*%noise_matrix[,ii-1]+cov_matrix_sqrt%*%innovations_matrix[,ii+1]
+    }
+  }else if(dgp=='LST'){
+    noise_matrix = generate_x_matrix(n,p,'LS',s)
+    mean_matrix =  generate_means(noise_matrix,s)    
+  }else if(dgp=='PLS'){
+    # Same as dgp=='LS' with exception there is a jump in variance of innovations in middle 
+    # of time series
+    sd_jump_number=2
+    sd_jump=2
+    rho=.5
+    ar_coefs=.25
+    coef_structure='x'
+    sin_cycles=1
+    
+    # create a sd_vector with each entry equal to the sd of innovations at a given time
+    sd_vector=rep(1,n)
+    sd_segment_length=round(n/(sd_jump_number+1))+1
+    
+    count_n=1
+    count_sd=1
+    
+    while(count_n<=n){
+      if(count_sd%%2==0){
+        sd_vector[count_n:(count_n+sd_segment_length-1)]=sd_jump
+        count_sd=1
+      }else{
+        sd_vector[count_n:(count_n+sd_segment_length-1)]=1
+        count_sd=2
+      }
+      count_n=count_n+sd_segment_length
+    }
+    
+    # Add an extra 1 because the innovations vector has one extra
+    # innovation for burn in
+    sd_vector=c(1,sd_vector[1:n])
+    
+    # create coefficient
+    coef_matrix=matrix(data=0,nrow=p,ncol=p)
+    diag(coef_matrix)=rep(ar_coefs,p)
+    if(coef_structure=='x'){
+      for(i in 1:p){
+        coef_matrix[p-i+1,i]=ar_coefs
+      }
+    }else if(coef_structure=='line'){
+      for(i in 1:(p-1)){
+        coef_matrix[i,i+1]=ar_coefs
+      }
+    }
+    
+    # Create the covariance matrix
+    cov_matrix=matrix(data=0,nrow=p,ncol=p)
+    for(ii in 1:p){
+      for(jj in 1:p){
+        cov_matrix[ii,jj]=rho**(abs(ii-jj))
+      }
+    }
+    eigen_decomp=eigen(cov_matrix)
+    cov_matrix_sqrt=eigen_decomp$vectors%*%diag(sqrt(eigen_decomp$values))
+    
+    # Create the sin coefficients that will be used
+    sin_coefs=(sin(((1:n)/n)*2*pi*sin_cycles)+1)/2
+    
+    noise_matrix=matrix(data=0,nrow=p,ncol=n)
+    
+    # Create an innovations matrix
+    innovations_matrix=matrix(data=rbinom((n+1)*p,10,.3)-3,nrow=p,ncol=n+1)
+    
+    for(ii in 1:p){
+      innovations_matrix[ii,]=innovations_matrix[ii,]*sd_vector
+    }
+    
+    x_0=cov_matrix_sqrt%*%innovations_matrix[,1]
+    noise_matrix[,1]=(coef_matrix*sin_coefs[1])%*%x_0+cov_matrix_sqrt%*%innovations_matrix[,2]
+    
+    for(ii in 2:n){
+      noise_matrix[,ii]=(coef_matrix*sin_coefs[ii])%*%noise_matrix[,ii-1]+cov_matrix_sqrt%*%innovations_matrix[,ii+1]
+    }
+    
+  }else if(dgp=='PLST'){
+    noise_matrix = generate_x_matrix(n,p,'PLS',s)
+    mean_matrix =  generate_means(noise_matrix,s)  
+  }
+  
+  if(is.null(x_matrix_split)){
+    return(noise_matrix+mean_matrix)  
+  }else{
+    if(x_matrix_split){
+      return(list(noise_matrix,mean_matrix)) 
+    }else{
+      return(noise_matrix+mean_matrix) 
+    }
+  }
+  
+}
+
+generate_means<-function(x_matrix,s){
+  # This function generates sin curve means with slightly different phases in each dimension
+  # x_matrix       - matrix of observations
+  # s              - scales that are used in testing, in list form
+
+  p=dim(x_matrix)[1]
+  n=dim(x_matrix)[2]
+  
+  if(typeof(s)=="double"){
+    scale_list=list()
+    for(i in seq(1,p)){
+      scale_list[[i]]=s
+    }
+  }else{
+    scale_list=s
+  }
+  
+  # Matrix with estimates of local standard deviation
+  local_sd_matrix=calc_local_sd(x_matrix,s)
+  
+  # Create matrix of the generated time varying mean, and then the time varying mean
+  # adjusted for the local standard deviation at each time point
+  mu_matrix=matrix(data=0,nrow=p,ncol=n)
+  mu_matrix_scaled=matrix(data=0,nrow=p,ncol=n)
+  
+  for(i in seq(1,p)){
+    mu_matrix[i,]=sin(((1:n)/n)*2*pi+(i/p)*2*pi)
+  
+    mu_matrix_scaled[i,1]=mu_matrix[i,1]
+      
+    for(j in seq(2,n)){
+      mu_matrix_scaled[i,j]=mu_matrix_scaled[i,j-1]+(mu_matrix[i,j]-mu_matrix[i,j-1])*local_sd_matrix[i,j]
+    }
+    
+    mu_matrix_scaled[i,] = mu_matrix_scaled[i,]
+    
+  }
+  
+  return(mu_matrix_scaled)  
+}
+
+calc_local_sd<-function(x_matrix,s){
+  # This function calculates the local standard deviation matrix for a time series. This
+  # is used to normalize the test statistics the means that are added to the data
+  # INPUT
+  # x_matrix               - matrix of time series
+  # s                      - vector of scales
+  
+  # Output
+  # local_sd_matrix        - matrix same size as x_matrix where each entry esimate
+  #                          of local standard deviation at each time
+  p=dim(x_matrix)[1]
+  n=dim(x_matrix)[2]
+  
+  if(typeof(s)=="double"){
+    scale_list=list()
+    for(i in seq(1,p)){
+      scale_list[[i]]=s
+    }
+  }else{
+    scale_list=s
+  }
+  
+  scale_count_list=list()
+  for(i in seq(1,p)){
+    scale_count_list[[i]]=round(scale_list[[i]]*n)
+  }
+  
+  # CALCULATE OPTIMAL VALUE OF S*
+  # Define what s* is (here we set it by default to be the minimum scale of each dim)
+  s_star_count_list=list()
+  for(i in seq(1,p)){
+    s_star_count_list[[i]]=min(scale_count_list[[i]])
+  }
+  
+  # Here we calculate the t_index_list which is a list of time indexes that 
+  # we test for each dimension this is based on the maximum scale
+  t_index_list=list()
+  for(i in seq(1,p)){
+    t_index_list[[i]]=seq(max(scale_count_list[[i]])+1,n-max(scale_count_list[[i]])-1,by=1)
+  }
+  
+  # COMPUTE THE NORMALIZATION MATRIX
+  # this is needed to normalize test/bootstrap statistics to account for
+  # the time series' different varainces
+  if(length(unique(scale_list))==1){
+    normalization_df=time_series_normalization_fast(x_matrix,s_star_count_list,t_index_list,
+                                                    scale_count_list,loud=NULL)
+  }else{
+    normalization_df = time_series_normalization(x_matrix,s_star_count_list,t_index_list,scale_count_list)  
+  }
+  
+  full_normalization_matrix = matrix(data=NA,nrow=p,ncol=n)
+  
+  for(i in seq(1,p)){
+    min_t_index=min(t_index_list[[i]])
+    max_t_index=max(t_index_list[[i]])
+    full_normalization_matrix[i,min_t_index:max_t_index]=normalization_df[((normalization_df$dimension==i)&
+                                                                             (normalization_df$t_index%in%t_index_list[[i]])),'sd']
+    
+    # fill in first few, and last few observations
+    full_normalization_matrix[i,1:min_t_index]=full_normalization_matrix[i,min_t_index]
+    full_normalization_matrix[i,max_t_index:n]=full_normalization_matrix[i,max_t_index]
+  }
+  
+  return(full_normalization_matrix)
+  
+}
+
+
+#### SCALE SELECTION ####
+
+scales_rot<-function(n,p){
+  # This function takes in a n,p and returns the high and low scales associated
+  # with the rule of thumb
+  # INPUT
+  # n           - sample size
+  # p           - dimension
+  # OUTPUT
+  # s_rot       - vector with two entries (s_low,s_high)
+  
+  s_rot=rep(0,2)
+  s_rot[1]=round((1/120)*n**(-1/3)*(log(p*n))**2*n)/n
+  s_rot[2]=round((1/27)*n**(-1/6)*log(p*n)*n)/n
+  
+  if(s_rot[2]<s_rot[1]){s_rot[1]=s_rot[2]}
+  
+  return(s_rot)
+}
+
+sparsify_scales<-function(s_low,s_high,n,p,max_scales=NULL){
+  # This function sparsifies the number of scales for a predeterimned
+  # number of scales
+  # INPUT
+  # s_low         - low scale
+  # s_high        - high scale
+  # n             - sample size
+  # p             - dimension
+  # max_scales    - optional argument - maximum number of scales to return
+  # OUTPUT
+  # sparse_scales - a vector of sparsified scales
+  
+  if(!is.null(max_scales)){
+    delta_n=max_scales  
+  }else{
+    delta_n=ceiling((1/2000)*log(n)^(1+epsilon)*log(p*n)^(5/2))
+  }
+  
+  sparse_scales=rep(0,delta_n)
+  
+  for(i in seq(1,delta_n)){
+    # Calculate raw scale
+    sparse_scales[i] = 2^( log(s_low,base=2) + (i-1)*(log(s_high,base=2)-log(s_low,base=2))/(delta_n-1))
+    
+    # Round the scale
+    sparse_scales[i] = round(sparse_scales[i]*n)/n
+  }
+  
+  # Get rid of duplicates
+  sparse_scales=unique(sparse_scales)
+  
+  # In case where number of scales requested exactly equal to
+  # number of possible ones
+  if(!is.null(max_scales)){
+    if((n*(s_high-s_low)+1)==max_scales){
+      sparse_scales=seq(s_low*n,s_high*n)/n
+    }
+  }
+  
+  # case where no scales requested
+  if(is.nan(sparse_scales[1])){
+    sparse_scales=c(s_low,s_high)
+  }
+  
+  return(sparse_scales) 
+}
+
+calc_desired_lrv_ratio<-function(n){
+  # This funtion calculates the desired LRV ratio based on n (see Appendix on selection
+  # of hyperparameters for further description).
+  # INPUT 
+  # n          -  sample size
+  # OUTPUT
+  # bias       - amount of bias that is ideal
+  bias=1+.85/log(n)
+  return(bias)
+}
+
+s_prime_select<-function(dgp,n,p,max_s_prime=NULL){
+  # This function computes the level of s_prime to use based on the
+  # desired LRV ratio, for various DGP. It does this by estimating the autocovariance structure
+  # of each of the simulated error processes.
+  # INPUT
+  # dgp                  - name of dgp
+  # n                    - sample size
+  # p                    - dimension
+  # OUTPUT
+  # s_prime              - value of s_prime
+  
+  #if(is.null(max_s_prime)){max_s_prime=20}
+  if(is.null(max_s_prime)){max_s_prime=round(n**(1/3))}
+  
+  desired_bias=calc_desired_lrv_ratio(n)
+  
+  # In the below if statements we estimate the autocovariance structure
+  # of the simulated data, and then approximate its long run variance and compare
+  # it to an approximation of the long run variance of the bootstrap.
+  
+  if(dgp%in%c('GS','GST')){
+    s_prime_list=seq(1,max_s_prime)
+    phi=.25
+    th_div_bs_lrv_vec=rep(0,length(s_prime_list))
+    
+    for(i in 1:length(s_prime_list)){
+      s_prime=s_prime_list[i]
+      autocov <- ts.extend::ARMA.autocov(n = 2*(max_s_prime), ar = c(phi))
+      LRV=autocov[1]+2*sum(autocov[2:(max_s_prime)])
+      bootstrap_LRV=bootstrap_lrv(s_prime,autocov)
+      th_div_bs_lrv_vec[i]=LRV/bootstrap_LRV
+    }  
+    
+    s_prime_unrounded=s_prime_list[which.min(abs(th_div_bs_lrv_vec-desired_bias))]
+    s_prime=s_prime_unrounded/n
+  }else if(dgp%in%c('PS','PST')){
+    s_prime_list=seq(1,max_s_prime)
+    
+    ma_coef=c(0.5,0,0.5)
+    th_div_bs_lrv_vec=rep(0,length(s_prime_list))
+    
+    for(i in 1:length(s_prime_list)){
+      s_prime=s_prime_list[i]
+      autocov <- ts.extend::ARMA.autocov(n = 2*(max_s_prime), ma = ma_coef)
+      LRV=autocov[1]+2*sum(autocov[2:(max_s_prime)])
+      bootstrap_LRV=bootstrap_lrv(s_prime,autocov)
+      
+      th_div_bs_lrv_vec[i]=LRV/bootstrap_LRV
+    }  
+    
+    # Select s_prime level
+    s_prime_unrounded=s_prime_list[which.min(abs(th_div_bs_lrv_vec-desired_bias))]
+    s_prime=s_prime_unrounded/n
+  }else if(dgp%in%c('PLS','PLST')){
+    coef_structure='x'
+    ar_coefs=.25
+    rho=.5
+    sin_cycles=1
+    
+    # create coef_matrix
+    coef_matrix=matrix(data=0,nrow=p,ncol=p)
+    diag(coef_matrix)=rep(ar_coefs,p)
+    if(coef_structure=='x'){
+      for(i in 1:p){
+        coef_matrix[p-i+1,i]=ar_coefs
+      }
+    }else if(coef_structure=='line'){
+      for(i in 1:(p-1)){
+        coef_matrix[i,i+1]=ar_coefs
+      }
+    }
+    
+    # Create the covariance matrix
+    cov_matrix=matrix(data=0,nrow=p,ncol=p)
+    for(ii in 1:p){
+      for(jj in 1:p){
+        cov_matrix[ii,jj]=rho**(abs(ii-jj))
+      }
+    }
+    eigen_decomp=eigen(cov_matrix)
+    cov_matrix_sqrt=eigen_decomp$vectors%*%diag(sqrt(eigen_decomp$values))
+    
+    # Create the sin coefficients that will be used
+    sin_coefs=(sin(((1:n)/n)*2*pi*sin_cycles)+1)/2
+    
+    # Calculate autocovariances
+    autocovariances=var_1_LRV(coef_matrix,cov_matrix,max_s_prime)
+    true_lrv_vector=rep(0,p)
+    for(jj in 1:p){
+      true_lrv_vector[jj]=autocovariances[jj,jj,1]+2*sum(autocovariances[jj,jj,2:(dim(autocovariances)[3]-1)])
+    }
+    
+    s_prime_list=seq(1,max_s_prime)
+    s_prime_matrix=matrix(data=0,nrow=p,ncol=length(s_prime_list))
+    
+    bs_lrv_vec=rep(0,length(s_prime_list))
+    
+    for(ii in 1:p){
+      for(jj in 1:length(s_prime_list)){
+        s_prime=s_prime_list[jj]  
+        s_prime_matrix[ii,jj]=bootstrap_lrv(s_prime,autocovariances[ii,ii,])
+      }
+    }
+    
+    th_div_bs_lrv=true_lrv_vector/s_prime_matrix
+    
+    # Choose level of s' such that all dimensions have bias <= desired bias
+    s_prime_unrounded=max(s_prime_list)
+    for(ii in 1:length(s_prime_list)){
+      if(sum(th_div_bs_lrv[,ii]<=desired_bias)==p){
+        s_prime_unrounded=s_prime_list[ii]
+        break
+      }
+    }
+    
+    s_prime=s_prime_unrounded/n
+  }else if(dgp%in%c('IID','IIDT')){
+    s_prime_unrounded=1
+    s_prime=s_prime_unrounded/n
+  }else if(dgp%in%c('LS','LST')){
+    rho=.5
+    ar_coefs=.25
+    coef_structure='x'
+    sin_cycles=1
+    
+    # create coef_matrix
+    coef_matrix=matrix(data=0,nrow=p,ncol=p)
+    diag(coef_matrix)=rep(ar_coefs,p)
+    if(coef_structure=='x'){
+      for(i in 1:p){
+        coef_matrix[p-i+1,i]=ar_coefs
+      }
+    }else if(coef_structure=='line'){
+      for(i in 1:(p-1)){
+        coef_matrix[i,i+1]=ar_coefs
+      }
+    }
+    
+    # Create the covariance matrix
+    cov_matrix=matrix(data=0,nrow=p,ncol=p)
+    for(ii in 1:p){
+      for(jj in 1:p){
+        cov_matrix[ii,jj]=rho**(abs(ii-jj))
+      }
+    }
+    eigen_decomp=eigen(cov_matrix)
+    cov_matrix_sqrt=eigen_decomp$vectors%*%diag(sqrt(eigen_decomp$values))
+    
+    # Create the sin coefficients that will be used
+    sin_coefs=(sin(((1:n)/n)*2*pi*sin_cycles)+1)/2
+    
+    # Calculate autocovariances
+    autocovariances=var_1_LRV(coef_matrix,cov_matrix,max_s_prime)
+    true_lrv_vector=rep(0,p)
+    for(jj in 1:p){
+      true_lrv_vector[jj]=autocovariances[jj,jj,1]+2*sum(autocovariances[jj,jj,2:(dim(autocovariances)[3]-1)])
+    }
+    
+    s_prime_list=seq(1,max_s_prime)
+    s_prime_matrix=matrix(data=0,nrow=p,ncol=length(s_prime_list))
+    
+    bs_lrv_vec=rep(0,length(s_prime_list))
+    
+    for(ii in 1:p){
+      for(jj in 1:length(s_prime_list)){
+        s_prime=s_prime_list[jj]  
+        s_prime_matrix[ii,jj]=bootstrap_lrv(s_prime,autocovariances[ii,ii,])
+      }
+    }
+    
+    th_div_bs_lrv=true_lrv_vector/s_prime_matrix
+    
+    # Choose level of s' such that all dimensions have bias <= desired bias
+    s_prime_unrounded=max(s_prime_list)
+    for(ii in 1:length(s_prime_list)){
+      if(sum(th_div_bs_lrv[,ii]<=desired_bias)==p){
+        s_prime_unrounded=s_prime_list[ii]
+        break
+      }
+    }
+    
+    # Select s_prime level
+    s_prime=s_prime_unrounded/n
+    
+  }
+  
+  return(s_prime)
+  
+}
+
+bootstrap_lrv<-function(s_prime_list,autocovariances){
+  # This function estimates the long run variance of the multiplier bootstrap
+  # INPUT
+  # s_prime_list    - list of s_primes (block bootstrap sizes) we are interested in
+  # autocovariances - list of autocovariances, first one is variance, will need
+  #                   a maximum autocovariance of ns'-1
+  # OUTPU
+  # lrv_list        - a list of long run variances
+  
+  lrv_list=rep(0,length(s_prime_list))
+  
+  # Fill in autocovariances that do not exist with 0
+  if(length(s_prime_list)>length(autocovariances)){
+    autocovariances=c(autocovariances,rep(0,length(s_prime_list)-length(autocovariances)))
+  }
+  
+  count=1
+  for(s_prime in s_prime_list){
+    if(s_prime==1){
+      lrv_list[count]=autocovariances[1]
+    }else{
+      summation=s_prime*(autocovariances[1])
+      
+      for(k in 1:(s_prime-1)){
+        summation=summation+(s_prime-k)*(2*autocovariances[k+1])
+      }
+      lrv_list[count]=summation/s_prime  
+    }
+    
+    count=count+1
+  }
+  
+  return(lrv_list)
+  
+}
+
+var_1_LRV<-function(coef_matrix,noise_cov,max_lag){
+  # This function calculates the long run variances of a VAR_1 process using
+  # a truncated sum
+  # INPUTS
+  # coef_matrix        - a pxp matrix of VAR coefficients
+  # noise_cov          - covariance matrix of the noise
+  # OUTPUTS
+  # lrv_matrix         - a px21 matrix where each entry is equal to the diagonal
+  #                      of the autocovariance matrix at lag i, i=1 is lag 0, i=21
+  #                      is lag 20
+  
+  p=nrow(coef_matrix)
+  
+  # Psi matrices in causal representation X_t=\sum_j=0^\infty \Psi^j Z_{t-j}
+  # which are equal to powers of coefficient matrices
+  psi_array=array(data=0,dim=c(p,p,2*max_lag+1))
+  psi_array[,,1]=diag(rep(1,p))
+  psi_array[,,2]=coef_matrix
+  for(j in 3:(2*max_lag)){
+    psi_array[,,j]=psi_array[,,j-1]%*%coef_matrix
+  }
+  
+  autocov_array=array(data=0,dim=c(p,p,max_lag+1))
+  
+  for(lag in 1:(max_lag+1)){
+    autocov_array[,,lag]=psi_array[,,1+lag-1]%*%noise_cov%*%t(psi_array[,,1])
+    
+    for(j in 1:max_lag){
+      autocov_array[,,lag]=autocov_array[,,lag]+psi_array[,,1+lag-1+j]%*%noise_cov%*%t(psi_array[,,1+j])
+    }
+    
+  }
+  
+  return(autocov_array)
+  
+}
+
+preprocess_s<-function(s,p,n){
+  # This function takes the values of s provided to the AJDN function and preprocesses them
+  # into counts, and also creates lists of what values of s_star to test as well as what
+  # indexes of t to test
+  # INPUTS
+  # s               - vector of scales (in 1/n form)
+  # p               - dimension
+  # n               - time series length
+  # OUTPUTS
+  # preprocess_list - a list of lists, and one vector, 
+  #                   where the first element is the scale count (scales in 
+  #                   terms of number of observation), second is s_star_count (s_star in terms
+  #                   of number of observations), and third is t_index; each sublist contains p
+  #                   elements, corresponding to each dimension. Finally the last part of the list
+  #                   of 4 is a vector of unique scales
+  
+  # If only one vector of scales is given we turn this into a list where each
+  # dimension has the same set of scales
+  if(typeof(s)=="double"){
+    scale_list=list()
+    for(i in seq(1,p)){
+      scale_list[[i]]=s
+    }
+  }else{
+    scale_list=s
+  }
+  
+  # Here we convert the scale_list into scale_count_list which is the number of
+  # observations associated with the scale (used because this is easier to work with)
+  # also we compile a vector of unique scales and their counts
+  scale_count_list=list()
+  s_star_count_list=list()
+  unique_scales=c()
+  for(i in seq(1,p)){
+    scale_count_list[[i]]=round(scale_list[[i]]*n)
+    s_star_count_list[[i]]=min(scale_count_list[[i]])
+    unique_scales=c(unique_scales,scale_list[[i]])
+  }
+  unique_scales=sort(unique(unique_scales))
+  unique_scale_counts = unique(round(unique_scales*n))
+  
+  # Here we calculate the t_index_list which is a list of time indexes that 
+  # we test for each dimension this is based on the maximum scale
+  t_index_list=list()
+  for(i in seq(1,p)){
+    t_index_list[[i]]=seq(max(scale_count_list[[i]])+1,n-max(scale_count_list[[i]])-1,by=1)
+  }
+  
+  return(list(scale_count_list,s_star_count_list,t_index_list,unique_scale_counts))
+}
+
+# a=preprocess_s(list(c(.04,.05,.06),c(.02,.03,.04)),2,1000)
+
+### ADD JUMPS TO SIMULATED DATA ####
+single_local_sd<-function(x_matrix,s_low,s_high,interested_dim,interested_t){
+  # This function takes a matrix of time series and then calculates for a 
+  # specific dimension and specific time what the local standard deviation is
+  # the reason behind having this function is a quick way to calculate local
+  # standard deviation for the purposes of adding changepoints of the correct
+  # scale to simulated data.
+  # INPUT
+  # x_matrix                  - matrix of time series
+  # s_low                     - low scale
+  # s_high                    - high scale
+  # interested_dim            - what dimension we want the local sd for
+  # interested_t              - what time we want the local sd for
+  # 
+  # OUTPUT
+  # local_sd                  - single number of the local standard deviation
+  n=dim(x_matrix)[2]
+  
+  t_index=round(interested_t*n)
+  min_scale_count=round(s_low*n)
+  max_scale_count=round(s_high*n)
+  
+  # Here if doing a single scale case, just use 1/2 the scale count as the window
+  if(min_scale_count==max_scale_count){min_scale_count=round(max_scale_count/2)}
+  
+  window_width = max_scale_count-min_scale_count + 1 # +1 given we include the endpoints of the interval
+  
+  left_mean = mean(x_matrix[interested_dim,(t_index-max_scale_count):(t_index-min_scale_count)])
+  right_mean = mean(x_matrix[interested_dim,(t_index+min_scale_count):(t_index+max_scale_count)])
+  
+  sample_sd = sqrt((sum((x_matrix[interested_dim,(t_index-max_scale_count):(t_index-min_scale_count)]-left_mean)**2)+
+                      sum((x_matrix[interested_dim,(t_index+min_scale_count):(t_index+max_scale_count)]-right_mean)**2))/(2*window_width))
+  
+  return(sample_sd)
+}
+
+add_changepoints_scaled<-function(scenario_number,gamma,
+                                  signal_to_noise,x_matrix,s,
+                                  fixed_local_sd=NULL){
+  # INPUTS
+  # scenario_number        - the changepoint scenario we are adding CPs for
+  # scenario_parameters    - proportion of dimensions undergoing a CP
+  # signal_to_noise        - size of changepoint in relation to local standard deviation
+  # x_matrix               - matrix of time series which we are applying CPs to
+  # s                      - scales being considered
+  # num_s_star_to_consider - how many s_star to use in calculation of local standard deviation matrix
+  # fixed_local_sd         - if want to fix all local standard deviations as a number, make this nonzero
+  
+  # OUTPUTS
+  # jump_matrix            - a matrix which can be added to the x_matrix for changepoints
+  # changepoint_locations  - a list of changepoint locations, note that a cp occuring at t=.5
+  #                        - means that the mean increases at t=.5+1/n
+  
+  # CONSTANTS
+  # the probability a jump is positive or negative is 0.5
+  
+  n=dim(x_matrix)[2]
+  p=dim(x_matrix)[1]
+  
+  # This is a matrix containing the jumps which we will add to the time series
+  jump_matrix = matrix(data=rep(0,n*p),nrow=p,ncol=n)
+  
+  # This is a matrix which will keep track of the locations of the changepoints will
+  changepoint_locations=matrix(ncol=2,nrow=0)
+  colnames(changepoint_locations)=c('dim','t')
+  
+  if(scenario_number==1){
+    # Here gamma*p/2 dimensions undergo changepoints t=.25
+    # and another gamma*p/2 dimensions undergo changepoints t=.75
+    first_cp_location=round(n*.25)+1
+    second_cp_location=round(n*.75)+1
+    dims_undergoing_1_cp=ceiling(p*gamma/2-.00000001)
+    
+    # First CP
+    for(i in seq(1,dims_undergoing_1_cp)){
+      jump_matrix[i,first_cp_location:n]=(single_local_sd(x_matrix,min(s),max(s),i,.25)*
+                                            signal_to_noise*
+                                            ((runif(1)>.5)*2-1))
+      
+      changepoint_locations=rbind(changepoint_locations,c(i,.25))
+    }
+    
+    # Second CP
+    for(i in seq(dims_undergoing_1_cp+1,2*dims_undergoing_1_cp)){
+      jump_matrix[i,second_cp_location:n]=(single_local_sd(x_matrix,min(s),max(s),i,.75)*
+                                             signal_to_noise*
+                                             ((runif(1)>.5)*2-1))
+      
+      changepoint_locations=rbind(changepoint_locations,c(i,.75))
+    }
+    
+  }else if(scenario_number==2){
+    
+    # Here the first changepoints occurs at t=.2, the last at t=.8
+    # and all others are evenly spaced in between this
+    first_cp_location=round(n*.2)+1
+    last_cp_location=round(n*.8)+1
+    other_dims_undergoing_cp=ceiling(p*gamma-.000001)-2
+    
+    # Locations of other changepoints
+    other_cp_locations=round(seq(first_cp_location,
+                                 last_cp_location,
+                                 length.out=other_dims_undergoing_cp+2)[2:(2+other_dims_undergoing_cp-1)])
+    
+    # Add first changepoint
+    dim_counter=1
+    
+    jump_matrix[dim_counter,first_cp_location:n]=(single_local_sd(x_matrix,min(s),max(s),dim_counter,.2)*
+                                                    signal_to_noise*
+                                                    ((runif(1)>.5)*2-1))
+    changepoint_locations=rbind(changepoint_locations,c(dim_counter,.2))
+    
+    # Add middle changepoints
+    for(i in other_cp_locations){
+      dim_counter=dim_counter+1
+      t_of_cp=(i-1)/n
+      
+      jump_matrix[dim_counter,i:n]=(single_local_sd(x_matrix,min(s),max(s),dim_counter,t_of_cp)*
+                                      signal_to_noise*
+                                      ((runif(1)>.5)*2-1))
+      changepoint_locations=rbind(changepoint_locations,c(dim_counter,t_of_cp))
+    }
+    
+    # Add last changepoint
+    dim_counter=dim_counter+1
+    jump_matrix[dim_counter,last_cp_location:n]=(single_local_sd(x_matrix,min(s),max(s),dim_counter,.8)*
+                                                   signal_to_noise*
+                                                   ((runif(1)>.5)*2-1))
+    changepoint_locations=rbind(changepoint_locations,c(dim_counter,.8))
+    
+  }else if(scenario_number==10){
+    # Here the first dimension undergoes a changepoint at t=.5
+    # this is used in the simulated rejection probabilities section of the
+    # paper
+    first_cp_location=round(n*.5)+1
+    
+    dims_undergoing_1_cp=1
+    
+    jump_matrix[1,first_cp_location:n]=(single_local_sd(x_matrix,min(s),max(s),1,.5)*
+                                          signal_to_noise*
+                                          ((runif(1)>.5)*2-1))
+    
+    changepoint_locations=rbind(changepoint_locations,c(1,.5))
+    
+    
+  }
+  
+  return(list(jump_matrix,changepoint_locations))
+}
+
+
+#### DETECT CP ####
+
+create_W_filter <- function(n,scale_count,t_index){
+  # This function creates a filter for a specific n,s,t
+  # INPUT
+  # scale_count - number of observations for this particular scale
+  # t_index     - index associated with the time we are looking at
+  # n           - number of total observations in time series
+  # OUTPUT
+  # W_row       - a vector of length n of the values the filter takes for each index i
+  
+  # OPTIMAL WAVELET FILTER
+  W_row = rep(0,n)
+  
+  # Values for filter on LHS of t_round
+  LHS_indicies = seq(t_index-scale_count,t_index-1) # indicies we are using
+  LHS_wave_inputs = (LHS_indicies/n-t_index/n)/(scale_count/n)# indicies converted to scale of [-1,0]
+  
+  # Filter equation from paper
+  W_row[(t_index-scale_count):(t_index-1)] = ((-1294.2222)*(LHS_wave_inputs**6) +
+                                            4246.6667*(abs(LHS_wave_inputs)**5) +
+                                            (-5320)*(LHS_wave_inputs**4) +
+                                            3188.8889*(abs(LHS_wave_inputs)**3) +
+                                            (-933.3333)*(LHS_wave_inputs**2) +
+                                            (112)*(abs(LHS_wave_inputs)))*sign(LHS_wave_inputs)
+  
+  # right at the boundary the filter should equal exactly 0
+  W_row[(t_index-scale_count)] = 0 
+  W_row[(t_index+1):(t_index+scale_count)] = rev(W_row[(t_index-scale_count):(t_index-1)]*(-1))
+  
+  return(W_row)
+}
+
+generate_upsilon_matrix <- function(x_matrix,s_prime){
+  # This function calcuates the values used in the multiplier bootstrap, $\Upsilon_i$ 
+  # INPUT
+  # x_matrix       - p x n time series matrix
+  # s_prime        - block size being used
+  # OUTPUT
+  # upsilon_matrix - p x n matrix of values used in the multiplier bootstrap
+  
+  n = dim(x_matrix)[2]
+  p = dim(x_matrix)[1]
+  
+  upsilon_matrix = matrix(0,nrow=p,ncol=n)
+  
+  # Since s_prime*n may be a fraction, and we need a whole
+  # number to construct the bootstrap so we round s_prime * n to do so
+  s_prime_round = round(s_prime*n)
+  
+  for(i in seq(1,n)){
+    if(i<=(s_prime_round+1)){
+      upsilon_matrix[,i] = (rowSums(x_matrix[,1:s_prime_round,drop=FALSE])-rowSums(x_matrix[,(s_prime_round+1):(2*s_prime_round),drop=FALSE]))/sqrt(2*s_prime_round)
+    } else if((i>(s_prime_round+1))&(i<=(n-s_prime_round))){
+      upsilon_matrix[,i] = (rowSums(x_matrix[,(i-s_prime_round):(i-1),drop=FALSE])-rowSums(x_matrix[,i:(i+s_prime_round-1),drop=FALSE]))/sqrt(2*s_prime_round)
+      
+    } else if(i>(n-s_prime_round)){
+      upsilon_matrix[,i] = (rowSums(x_matrix[,(n-2*s_prime_round+1):(n-s_prime_round),drop=FALSE])-rowSums(x_matrix[,(n-s_prime_round+1):n,drop=FALSE]))/sqrt(2*s_prime_round)
+    }  
+  }
+  
+  return(upsilon_matrix)  
+}
+
+second_stage_refine <-function(first_stage_changepoints,x_matrix,scale_count_list){
+  # This function takes a list of jumps that were already identified and
+  # applies a second stage procedure to enhance the estimation accuracy of the procedure
+  # INPUT
+  # first_stage_changepoints - the jumps identified during the first stage, a list with
+  #                            dimension, scale, and time of each
+  # x_matrix                 - matrix of x values
+  # scale_count_list         - a list of scales (in count form) for each dimension
+  
+  n = dim(x_matrix)[2]
+  
+  second_stage_changepoints = first_stage_changepoints
+  
+  count=1
+  
+  # Iterate through each jump found in the first stage and conduct the second
+  # stage procedure to refine the estimation of the jump
+  for(cp in first_stage_changepoints){
+    cp_t = cp['t_index']
+    cp_dim = cp['dim']
+    z_n = min(scale_count_list[[cp_dim]])/2
+    
+    # Calculate l_r,u_r,l_r_tilde,u_r_tilde for a given n
+    reg_window = round((2+ss_refine_alpha_tilde)*z_n)
+    tilde_window = z_n
+    
+    if(cp_t+reg_window>n){
+      reg_window=n-cp_t
+      z_n=reg_window
+    }else if(cp_t-reg_window<1){
+      reg_window=cp_t-1
+      z_n=reg_window
+    }
+    
+    l_r = (cp_t-reg_window)
+    u_r = (cp_t+reg_window)
+    
+    l_r_tilde = (cp_t-tilde_window)
+    u_r_tilde = (cp_t+tilde_window)
+    
+    cusum_stats = rep(0,n)
+    
+    S_lr_ur = sum(x_matrix[cp_dim,l_r:u_r])
+    lambda_lr_ur = u_r-l_r+1
+    
+    s_lj_t=cumsum(as.numeric(x_matrix[cp_dim,l_r:u_r]))
+    lambda_frac=(seq(l_r,u_r)-l_r+1)/lambda_lr_ur
+    cusum_stats[seq(l_r,u_r)]=s_lj_t-lambda_frac*S_lr_ur
+    
+    max_evidence = max(abs(cusum_stats[l_r_tilde:u_r_tilde]))
+    max_evidence_index = which(abs(cusum_stats)==max_evidence)[1]
+    
+    second_stage_changepoints[[count]]['t_index'] = max_evidence_index
+    
+    count=count+1
+  }
+  
+  
+  return(second_stage_changepoints)
+}
+
+time_series_normalization <-function(x_matrix,s_star_count_list,t_index_list,
+                                     scale_count_list,num_cores=NULL,loud=NULL){
+  # This function calculates an estimate of the standard deviation of a time series 
+  # at each time point
+  #
+  # INPUT
+  # x_matrix              - a matrix with different time series as rows
+  # s_star_count_list     - a list of hyperparameters related to the window we use to calculate 
+  #                         the standard deviation of each entry corresponds to the parameter for the dimension
+  # t_index_list          - a list of the time indexes we need to calculate local standard deviations for for each
+  #                       - dimension
+  # scale_count_list      - a list of scales for each dimension (converted to whole numbers relative to n)
+  # num_cores             - optional argument, the number of cores to use for parallelization
+  # loud                  - whether to print when dimensions are normalized
+  
+  # OUTPUT
+  # normalization_df      - a dataframe, with the local sd, time index, and dimension
+  
+  p = dim(x_matrix)[1]
+  n = dim(x_matrix)[2]
+  
+  if(is.null(num_cores)){
+    normalization_df=data.frame(sd=numeric(),t_index=numeric(),dimension=numeric())
+    
+    for(i in seq(1,p)){
+      s_star_count=s_star_count_list[[i]]
+      max_scale_count=max(scale_count_list[[i]])
+      window_width = max_scale_count-s_star_count + 1 # +1 given we include the endpoints of the interval
+      
+      for(t_index in t_index_list[[i]]){
+        
+        left_mean = mean(x_matrix[i,(t_index-max_scale_count):(t_index-s_star_count)])
+        right_mean = mean(x_matrix[i,(t_index+s_star_count):(t_index+max_scale_count)])
+        
+        sample_var = (sum((x_matrix[i,(t_index-max_scale_count):(t_index-s_star_count)]-left_mean)**2)+
+                        sum((x_matrix[i,(t_index+s_star_count):(t_index+max_scale_count)]-right_mean)**2))/(2*window_width)
+        
+        normalization_df=rbind(normalization_df,
+                               data.frame(sd=sqrt(sample_var),t_index=t_index,dimension=i))
+      }
+      if(!is.null(loud)){print(paste('Normalized dimension',i))}
+    }  
+  }else{
+    cl <- parallel::makeCluster(num_cores,outfile="")
+    doParallel::registerDoParallel(cl)
+    
+    normalization_df=foreach(dimension=seq(1,p), 
+                            .packages = c("Matrix",'doParallel','foreach','plyr'),
+                            .combine='rbind') %dopar% {
+      
+      normalization_df_single_dim=data.frame(sd=numeric(),t_index=numeric(),dimension=numeric())
+      s_star_count=s_star_count_list[[dimension]]
+      max_scale_count=max(scale_count_list[[dimension]])
+      window_width = max_scale_count-s_star_count + 1 # +1 given we include the endpoints of the interval
+      
+      for(t_index in t_index_list[[dimension]]){
+        
+        left_mean = mean(x_matrix[dimension,(t_index-max_scale_count):(t_index-s_star_count)])
+        right_mean = mean(x_matrix[dimension,(t_index+s_star_count):(t_index+max_scale_count)])
+        
+        sample_var = (sum((x_matrix[dimension,(t_index-max_scale_count):(t_index-s_star_count)]-left_mean)**2)+
+                        sum((x_matrix[dimension,(t_index+s_star_count):(t_index+max_scale_count)]-right_mean)**2))/(2*window_width)
+        
+        normalization_df_single_dim=rbind(normalization_df_single_dim,
+                               data.frame(sd=sqrt(sample_var),t_index=t_index,dimension=dimension))
+      }
+      if(!is.null(loud)){print(paste('Normalized dimension',dimension))}
+      normalization_df_single_dim
+    }
+    parallel::stopCluster(cl)
+  }
+  
+  return(normalization_df)
+  
+}
+
+# a = time_series_normalization(x_matrix,.01,.1,t_to_test)
+
+time_series_normalization_fast <-function(x_matrix,s_star_count_list,t_index_list,
+                                     scale_count_list,loud=NULL){
+  # This function calculates an estimate of the standard deviation of a time series at each time point
+  # when the s, s_star are the same for every dimension
+  # this is generally significantly faster than time_series_normalization
+  #
+  # INPUT
+  # x_matrix              - a matrix with different time series as rows
+  # s_star_count_list     - a list of hyperparameters related to the window we use to calculate 
+  #                         the standard deviation of each entry corresponds to the parameter for the dimension
+  # t_index_list          - a list of the time indexes we need to calculate local standard deviations for for each
+  #                       - dimension
+  # scale_count_list      - a list of scales for each dimension (converted to whole numbers relative to n)
+  # num_cores             - optional argument, the number of cores to use for parallelization
+  # loud                  - whether to print when dimensions are normalized
+  
+  # OUTPUT
+  # normalization_df      - a dataframe, with the local sd, time index, and dimension
+  
+  p = dim(x_matrix)[1]
+  n = dim(x_matrix)[2]
+  
+  max_scale_count=max(scale_count_list[[1]])
+  s_star_count=s_star_count_list[[1]]
+  t_indexes=t_index_list[[1]]
+  window_size=max_scale_count-s_star_count+1
+  
+  # If we only have one scale then s_star_count=max_scale_count which doesn't
+  # really make sense when calculating variances, in this case we will set
+  # s_star_count to round(max_scale_count/2) to give us a reasonable window
+  # for what the variances/means should be#
+  if(s_star_count==max_scale_count){
+    s_star_count=round(max_scale_count/2)
+    window_size=max_scale_count-s_star_count+1
+  }
+  
+  # Matrix we will input all of the variance entries into
+  var_matrix=matrix(data=0,nrow=p,ncol=n)
+  x_matrix_sq=x_matrix**2
+  
+  # In the below code we calculate all of the variances incrementally, since
+  # the formula for variance at t, can be calculated by slightly adjusting the
+  # formula for the variance at t-1 (i.e. dont have to sum over a bunch of values
+  # in the x_matrix, only need to access a few elements)
+    
+  # Calculate means and sum of squares of time series, can then use these values to quickly
+  # calculate variances
+  t_index=t_indexes[1]
+  left_mean=rowMeans(x_matrix[,(t_index-max_scale_count):(t_index-s_star_count),drop=FALSE])
+  right_mean=rowMeans(x_matrix[,(t_index+s_star_count):(t_index+max_scale_count),drop=FALSE])
+  left_sum_sq=rowSums(x_matrix_sq[,(t_index-max_scale_count):(t_index-s_star_count),drop=FALSE])
+  right_sum_sq=rowSums(x_matrix_sq[,(t_index+s_star_count):(t_index+max_scale_count),drop=FALSE])
+  
+  var_matrix[,t_index]=((left_sum_sq-window_size*left_mean**2)+
+                          (right_sum_sq-window_size*right_mean**2))/(2*window_size)
+  
+  for(t_index in t_indexes[2:length(t_indexes)]){
+    # Update values of left_mean, right_mean, left_sum_sq, right_sum_sq
+    # and then update var_matrix with them
+    left_mean=left_mean+(x_matrix[,t_index-s_star_count]-x_matrix[,t_index-1-max_scale_count])/window_size
+    right_mean=right_mean+(x_matrix[,t_index+max_scale_count]-x_matrix[,t_index-1+s_star_count])/window_size
+
+    left_sum_sq=left_sum_sq+x_matrix_sq[,t_index-s_star_count]-x_matrix_sq[,t_index-1-max_scale_count]
+    right_sum_sq=right_sum_sq+x_matrix_sq[,t_index+max_scale_count]-x_matrix_sq[,t_index-1+s_star_count]
+
+    var_matrix[,t_index]=((left_sum_sq-window_size*left_mean**2)+
+                           (right_sum_sq-window_size*right_mean**2))/(2*window_size)
+  }
+  
+  # Create a dataframe with which to return the standard deviations that were found
+  normalization_df=data.frame(sd=numeric(),t_index=numeric(),dimension=numeric())
+  
+  min_t_index=min(t_indexes)
+  max_t_index=max(t_indexes)
+  
+  # Note that the variance matrix may sometimes be slightly negative due to a numerical
+  # precision error, therefore I will take its absolute value
+  var_matrix=abs(var_matrix)
+  
+  for(i in 1:p){
+    normalization_df=rbind(normalization_df,
+          data.frame(sd=sqrt(var_matrix[i,min_t_index:max_t_index]),
+                     t_index=t_indexes,dimension=i))
+  }
+  
+  return(normalization_df)
+}
+
+create_filter_matrix <- function(n,unique_scale_counts){
+  # This function creates a filter matrix, as well as a filter matrix dictionary
+  # which is then used to calculate both test statistics and bootstrap statistics for AJDN
+  # INPUTS 
+  # n                   - the length of all time series
+  # unique_scale_counts - all of the different scales we need to create filters for
+  # num_cores           - number of cores to use for parallelization
+  # OUTPUTS
+  # filter_matrix_list  - a list where the first item is a sparse matrix that represents
+  #                       the filter matrix, and the second item is the filter matrix
+  #                       dictionary which specifies what scale_count and t_index each
+  #                       row of the filter matrix corresponds to
+  
+  # Setup a filter matrix and a corresponding filter matrix dictionary which
+  # describes what time index and what scale_count each row of the matrix
+  # corresponds to
+  filter_matrix=matrix(ncol=n,nrow=0)
+  filter_matrix = Matrix(filter_matrix,sparse=TRUE)
+  filter_matrix_dictionary=data.frame(scale_count=numeric(),t_index=numeric())
+  
+  for(scale_count_i in unique_scale_counts){
+    a=Sys.time()
+    # Get a list of the t_indexes we need a filter for
+    t_indexes_to_test=seq(scale_count_i+1,n-scale_count_i,by=1)
+    
+    # Get the filter for the first t_index
+    first_t_index_filter=create_W_filter(n,scale_count_i,t_indexes_to_test[1])/sqrt(2*scale_count_i)
+    
+    # get the entries of the filter corresponding to [t-s,t+s]
+    filter_entries=first_t_index_filter[1:(t_indexes_to_test[1]+scale_count_i)]
+    
+    # Create a filter matrix for just one scale (will bind it to larger filter matrix eventually)
+    single_scale_filter_matrix=Matrix(data=0,
+                                      nrow=length(t_indexes_to_test),
+                                      ncol=n,
+                                      sparse=TRUE)
+    
+    # Fill this single filter matrix by creating a vector of row_indicies, and column_indicies which
+    # are the exact position in the matrix where filter_entries should go, for example
+    # if the filter was 3 indexes wide then row_indicies=c(1,1,1,2,2,2,...) and
+    # column_indicies=c(1,2,3,2,3,4,4,5,6,...)
+    row_indicies=rep(1:length(t_indexes_to_test),each=(2*scale_count_i+1))
+    column_indices=c(mapply(seq,from=(t_indexes_to_test[1]-scale_count_i):(t_indexes_to_test[length(t_indexes_to_test)]-scale_count_i),
+                            length.out=round(2*scale_count_i+1)))
+    single_scale_filter_matrix=sparseMatrix(i=row_indicies,
+                                            j=column_indices,
+                                            x=rep(filter_entries,
+                                                  length(t_indexes_to_test)))
+    
+    # Create the dictionary for this filter matrix
+    single_scale_filter_matrix_dictionary=data.frame(scale_count=rep(scale_count_i,length(t_indexes_to_test)),
+                                                     t_index=t_indexes_to_test)
+    
+    # Bind this filter matrix to the master filter matrix, and same with the dictionary
+    filter_matrix=rbind(filter_matrix,single_scale_filter_matrix)
+    filter_matrix_dictionary=rbind(filter_matrix_dictionary,single_scale_filter_matrix_dictionary)
+  }
+  
+  
+  return(list(filter_matrix,filter_matrix_dictionary))
+  
+}
+
+ajdn_detect_jumps<-function(x_matrix,
+                                   s,
+                                   s_prime,
+                                   B,
+                                   alpha,
+                                   filter_matrix_list=NULL,
+                                   loud=NULL,
+                                   num_cores=NULL,
+                                   output_bootstraps_and_teststat=NULL,
+                                   bootstrap_normal_seed=NULL,
+                                   fixed_s_star=NULL){
+  
+  # This functions takes a matrix of time series, a few additional inputs, and then returns
+  # the estimated jump locations
+  
+  # INPUTS
+  # x_matrix                        - matrix of time series, # rows = # dimensions
+  # s                               - a vector of scales to test, or a list of scales where each item in 
+  #                                   list corresponds to vector of scales for that dimension
+  # s_prime                         - s_prime value used
+  # B                               - number of bootstraps to use in calculation of critical value
+  # alpha                           - desired type I error
+  # filter_matrix_list              - a list, where the first element is a filter matrix and the
+  #                                   second is a dictionary specifying the scale count and time index
+  #                                   of each filter, this is an optional argument, and if it is not 
+  #                                   provided a filter matrix will be calculated (meant to speed up instances
+  #                                   where running AJDN a lot)
+  # loud                            - if loud=TRUE then print out all the locations of the jumps detected
+  # num_cores                       - the number of cores to parallelize the computation across,
+  #                                   leave as null if not parallelizing
+  # output_bootstraps_and_teststat  - this is an option where if it is set to true the function
+  #                                   returns the max test stat, and all initial bootstraps (this is used
+  #                                   just to examine behaviour of the algorithm)
+  # bootstrap_normal_seed           - a seed to set before generating the standard normal random variables
+  #                                   for the bootstrap
+  # fixed_s_star                    - a scale for s_star (optional), wlll apply for all dimensions
+  
+  # OUTPUT 
+  # ss_cp_df - a dataframe with estimated locations of changepoints
+  
+  p=dim(x_matrix)[1]
+  n=dim(x_matrix)[2]
+  
+  preprocess_list=preprocess_s(s,p,n)
+  scale_count_list=preprocess_list[[1]]
+  s_star_count_list=preprocess_list[[2]]
+  t_index_list=preprocess_list[[3]]
+  unique_scale_counts=preprocess_list[[4]]
+  
+  if(!is.null(fixed_s_star)){
+    s_star_count_list=list()
+    for(i in 1:p){s_star_count_list[[i]]=round(fixed_s_star*n)}
+  }
+  
+  if(!is.null(output_bootstraps_and_teststat)){bootstrap_teststat_list=list()}
+  
+  if(!is.null(loud)){print('Creating Filter Matrix')}
+  
+  # Setup a filter matrix and a corresponding filter matrix dictionary which
+  # describes what time index and what scale_count each row of the matrix
+  # corresponds to, if filter matrix has already been created, can ignore this
+  # step
+  if(is.null(filter_matrix_list)){
+    filter_matrix_list=create_filter_matrix(n,unique_scale_counts)  
+  }
+  
+  filter_matrix=filter_matrix_list[[1]]
+  filter_matrix_dictionary=filter_matrix_list[[2]]
+  
+  # CALCULATE TEST STATISTICS
+  if(!is.null(loud)){print('Calculating Test Statistics')}
+  
+  # There are 3 cases here we consider (in order of code written)
+  # Case 1 - all dimensions have same scales, then calculating test statistics
+  #          is a simple and efficient matrix multiplication
+  # Case 2 - not all dimensions have same scales, then will need to loop through
+  #          each dimension to calculate it, no paralleization
+  # Case 3 - like case 2 but with parallelization
+  
+  if(length(unique(scale_count_list))==1){
+    
+    # Get only filter matrix rows we want to include (important since filter matrix will
+    # include times that are smaller than the biggest s) 
+    filter_rows_to_include=((filter_matrix_dictionary$scale_count%in%scale_count_list[[1]])&(
+    filter_matrix_dictionary$t_index%in%t_index_list[[1]]))
+    all_dimension_filter_dictionary=filter_matrix_dictionary[filter_rows_to_include,]
+    
+    # a matrix of size f x p where f number of filters being used
+    raw_test_statistics=abs(filter_matrix[filter_rows_to_include,]%*%t(x_matrix))
+    
+    # Insert these test statistics into a dataframe with their respective
+    # dimensions, scales, and times
+    test_statistics = data.frame(test_stat=as.vector(raw_test_statistics),
+                                 scale_count=rep(all_dimension_filter_dictionary$scale_count,p),
+                                 t_index=rep(all_dimension_filter_dictionary$t_index,p),
+                                 dimension=rep(1:p, each=dim(all_dimension_filter_dictionary)[1])) 
+    
+  }else if(is.null(num_cores)){
+    
+    # go through iteratively for each dimension and calculate the test statistics
+    # for each time, scale, and dimension
+    test_statistics = data.frame(test_stat=numeric(),
+                                 scale_count=numeric(),
+                                 t_index=numeric(),
+                                 dimension=numeric())
+    
+    for(i in seq(1,p)){
+      # Which rows of the filter matrix to include (list of true/false)
+      filter_rows_to_include=((filter_matrix_dictionary$scale_count%in%scale_count_list[[i]])&(
+      filter_matrix_dictionary$t_index%in%t_index_list[[i]]))
+      dimension_filter_dictionary=filter_matrix_dictionary[filter_rows_to_include,]
+      
+      # Calculate the unnormalized test statistics and create a df of them
+      dimension_test_statistics=abs(filter_matrix[filter_rows_to_include,]%*%x_matrix[i,])[,1]
+      dimension_test_df=cbind(data.frame(test_stat=dimension_test_statistics),
+                              dimension_filter_dictionary,
+                              data.frame(dimension=i))
+      test_statistics=rbind(test_statistics,dimension_test_df)
+      
+      if(!is.null(loud)){print(paste('Calculating Test Statistics Dim',i))}
+    }  
+  }else{
+    cl <- parallel::makeCluster(num_cores,outfile="")
+    doParallel::registerDoParallel(cl)
+    
+    test_statistics=foreach(dimension=seq(1,p), 
+                            .packages = c("Matrix",'doParallel','foreach','plyr'),
+                            .combine='rbind') %dopar% {
+                                     
+      # Which rows of the filter matrix to include (list of true/false)
+      filter_rows_to_include=((filter_matrix_dictionary$scale_count%in%scale_count_list[[dimension]])&(
+      filter_matrix_dictionary$t_index%in%t_index_list[[dimension]]))
+      dimension_filter_dictionary=filter_matrix_dictionary[filter_rows_to_include,]
+      
+      # Calculate the unnormalized test statistics and create a df of them
+      dimension_test_statistics=abs(filter_matrix[filter_rows_to_include,]%*%x_matrix[dimension,])[,1]
+      dimension_test_df=cbind(data.frame(test_stat=dimension_test_statistics),
+                              dimension_filter_dictionary,
+                              data.frame(dimension=dimension))
+      dimension_test_df
+                                     
+    }
+    parallel::stopCluster(cl)
+  }
+  
+  if(!is.null(loud)){print('Normalizing Test Statistics')}
+  
+  # If all values of scale_count_list are the same, then that means
+  # we can use the faster version of the function time_series_normalization
+  if((length(unique(scale_count_list))==1)){
+    normalization_constants=time_series_normalization_fast(x_matrix,s_star_count_list,
+                                                           t_index_list,scale_count_list)
+  }else{
+    normalization_constants=time_series_normalization(x_matrix,s_star_count_list,t_index_list,scale_count_list,num_cores)
+  }
+  
+  test_statistics=join(test_statistics,normalization_constants,by=c('t_index','dimension'))
+  test_statistics[,'test_stat_normalized']=test_statistics[,'test_stat']/test_statistics[,'sd']
+  test_statistics=test_statistics[,c('dimension','t_index','scale_count','test_stat_normalized')]
+  
+  # Record the maximum test statistic
+  if(!is.null(output_bootstraps_and_teststat)){
+    bootstrap_teststat_list[['test_stat']]=max(test_statistics$test_stat_normalized)
+  }
+  
+  # Create a list that will keep track of jumps
+  changepoints_identified = list()
+  changepoint_number = 0
+  
+  # CALCULATE BOOTSTRAP STATISTICS
+  if(!is.null(loud)){print('Conducting Bootstrap')}
+  
+  # Generate upsilon matrix from x's
+  upsilon_matrix = generate_upsilon_matrix(x_matrix,s_prime)
+  
+  # Create a matrix of dimension p x B where each entry is the maximum test statistic
+  # of dimension i for bootstrap iteration j, we will fill this matrix and then take the
+  # critical values of the bootstrap from it
+  bootstrap_evidence = matrix(data=NA,nrow=p,ncol=B)
+  
+  # Create random normals for use in the bootstrap, each row is for a particular
+  # bootstrap iteration, which has n random normals associated with it
+  if(!is.null(bootstrap_normal_seed)){
+    set.seed(bootstrap_normal_seed)
+  }
+  bootstrap_normals = matrix(data=rnorm(n*B),nrow=B,ncol=n)
+  
+  # Here similarly to calculating test statistics we want to speed things up
+  # if there is only one set of scales
+  if(length(unique(scale_count_list))==1){
+    all_same_scales=1
+    
+    filter_matrix_specific_dim_indexes=((filter_matrix_dictionary$scale_count%in%scale_count_list[[1]])
+                                        &(filter_matrix_dictionary$t_index%in%t_index_list[[1]]))
+    
+    filter_matrix_specific_dim=filter_matrix[filter_matrix_specific_dim_indexes,]
+    filter_matrix_specific_dim_dictionary=filter_matrix_dictionary[filter_matrix_specific_dim_indexes,]  
+  }else{
+    all_same_scales=0
+  }
+  
+  # Here we calculate the bootstrap statistics by either parallelizing across dimension
+  # or by looping through each dimension
+  if(is.null(num_cores)){
+    for(i in seq(1,p)){
+      if(all_same_scales!=1){
+        # get the filter matrix associated with this dimension
+        filter_matrix_specific_dim_indexes=((filter_matrix_dictionary$scale_count%in%scale_count_list[[i]])
+                                            &(filter_matrix_dictionary$t_index%in%t_index_list[[i]]))
+        
+        filter_matrix_specific_dim=filter_matrix[filter_matrix_specific_dim_indexes,]
+        filter_matrix_specific_dim_dictionary=filter_matrix_dictionary[filter_matrix_specific_dim_indexes,]
+      }
+      
+      # Calculate the upsilon_j * z_j for each time j and each bootstrap_iteration
+      upsilon_times_stdnormal=sweep(bootstrap_normals,MARGIN=2,upsilon_matrix[i,],'*')
+      
+      # Apply the filter matrix to upsilon * z matrix for each time and scale
+      bootstrap_stats_specific_dim = abs(filter_matrix_specific_dim%*%t(upsilon_times_stdnormal))
+      
+      # normalization constants for each filter
+      normalization_constants_specific_dim=normalization_constants[normalization_constants$dimension==i,
+                                                                   c('sd','t_index')]
+      
+      # match the normalization constant with the correct time in the same order of the filter matrix
+      # for this specific dimension
+      filter_matrix_specific_dim_dictionary=join(filter_matrix_specific_dim_dictionary,normalization_constants_specific_dim,
+                                                 by='t_index')
+      
+      # Apply normalization to all of the bootstrap statistics
+      bootstrap_stats_specific_dim=sweep(bootstrap_stats_specific_dim,
+                                         MARGIN=1,
+                                         filter_matrix_specific_dim_dictionary$sd,
+                                         '/')
+      
+      # Take maximum statistic for each bootstrap iteration and add it to the matrix
+      # bootstrap_evidence
+      bootstrap_evidence[i,]=apply(bootstrap_stats_specific_dim,2,max)
+      
+      if(!is.null(loud)){print(paste('Bootstrap Done on Dimension',i))}
+    } 
+
+  }else{
+    cl <- parallel::makeCluster(num_cores,outfile="")
+    doParallel::registerDoParallel(cl)
+    
+    bootstrap_evidence=foreach(dimension=seq(1,p), 
+                            .packages = c("Matrix",'doParallel','foreach','plyr'),
+                            .combine='rbind') %dopar% {
+                              
+      # get the filter matrix associated with this dimension
+      filter_matrix_specific_dim_indexes=((filter_matrix_dictionary$scale_count%in%scale_count_list[[dimension]])
+                                          &(filter_matrix_dictionary$t_index%in%t_index_list[[dimension]]))
+      
+      filter_matrix_specific_dim=filter_matrix[filter_matrix_specific_dim_indexes,]
+      filter_matrix_specific_dim_dictionary=filter_matrix_dictionary[filter_matrix_specific_dim_indexes,]
+      
+      # Calculate the upsilon_j * z_j for each time j and each bootstrap_iteration
+      upsilon_times_stdnormal=sweep(bootstrap_normals,MARGIN=2,upsilon_matrix[dimension,],'*')
+      
+      # Apply the filter matrix to upsilon * z matrix for each time and scale
+      bootstrap_stats_specific_dim = abs(filter_matrix_specific_dim%*%t(upsilon_times_stdnormal))
+      
+      # normalization constants for each filter
+      normalization_constants_specific_dim=normalization_constants[normalization_constants$dimension==dimension,
+                                                                   c('sd','t_index')]
+      
+      # match the normalization constant with the correct time in the same order of the filter matrix
+      # for this specific dimension
+      filter_matrix_specific_dim_dictionary=join(filter_matrix_specific_dim_dictionary,normalization_constants_specific_dim,
+                                                 by='t_index')
+      
+      # Apply normalization to all of the bootstrap statistics
+      bootstrap_stats_specific_dim=sweep(bootstrap_stats_specific_dim,
+                                         MARGIN=1,
+                                         filter_matrix_specific_dim_dictionary$sd,
+                                         '/')
+      
+      # Take maximum statistic for each bootstrap iteration and add it to the matrix
+      # bootstrap_evidence
+      if(!is.null(loud)){print(paste('Bootstrap Done on Dimension',dimension))}
+      apply(bootstrap_stats_specific_dim,2,max)
+    }
+
+    parallel::stopCluster(cl)  
+  }
+  
+  # Record the maximums of each bootstrap iteration
+  # Record the maximum test statistic
+  if(!is.null(output_bootstraps_and_teststat)){
+    bootstrap_teststat_list[['bootstraps']]=apply(bootstrap_evidence,2,max)
+  }
+  
+  # Use a while loop, and in each iteration compare test statistic to critical value produced
+  # by bootstrap. Any time a jump is detected, recalculate the bootstrap critical value (only
+  # recalculate for dimension where jump detected to save computation), and maximum test statistic (
+  # by ignoring values around the detected jump).
+  exit_loop=0
+  
+  while(exit_loop==0){
+    
+    # The maximum evidence we have for each bootstrap iteration
+    bootstrap_max_evidence_by_iteration = apply(bootstrap_evidence,2,max)
+    
+    # Decide whether to accept or reject null
+    # Check to see if we reject the null hypothesis
+    max_test_statistic=test_statistics[which.max(test_statistics$test_stat_normalized),]
+    
+    if(max_test_statistic$test_stat_normalized>quantile(bootstrap_max_evidence_by_iteration,1-alpha)){
+      
+      changepoint_number = changepoint_number+1
+      cp_dimension = max_test_statistic$dimension
+      names(cp_dimension)='dim'
+      cp_scale = max_test_statistic$scale_count
+      cp_time = max_test_statistic$t_index
+      
+      if(!is.null(loud)){
+        print(paste('CP',changepoint_number,'located in dimension',cp_dimension,'approx t index',cp_time,Sys.time()))  
+      }
+      
+      # Record jump
+      changepoints_identified[[changepoint_number]]=c(cp_dimension, cp_scale,cp_time)
+      names(changepoints_identified[[changepoint_number]])=c('dim','scale_count','t_index')
+      
+      # Set test statistics in neighbourhood of max(s) around this time index to
+      # 0 so we do not detect another jump that is too close
+      deletion_window_size=ceiling((1+cp_delete_c)*max(scale_count_list[[cp_dimension]]))
+      t_index_to_delete_test_stat=seq(cp_time-deletion_window_size,
+                                      cp_time+deletion_window_size)
+      
+      test_statistics[(test_statistics$dimension==cp_dimension)&
+                      (test_statistics$t_index%in%t_index_to_delete_test_stat),
+                      'test_stat_normalized']=0
+      
+      # Recalculate the bootstrap statistics for the dimension with the jump, what
+      # this entails is getting the bootstrap statistics for this specific dimension but
+      # excluding all of the statistics near jump that have already been identified
+      # (note this code is nearly identical to the code that calculates the bootstrap
+      # statistics initially)
+      filter_matrix_specific_dim_indexes=((filter_matrix_dictionary$scale_count%in%scale_count_list[[cp_dimension]])
+                                          &(filter_matrix_dictionary$t_index%in%t_index_list[[cp_dimension]]))
+      
+      filter_matrix_specific_dim=filter_matrix[filter_matrix_specific_dim_indexes,]
+      filter_matrix_specific_dim_dictionary=filter_matrix_dictionary[filter_matrix_specific_dim_indexes,]
+      
+      # Calculate the upsilon_j * z_j for each time j and each bootstrap_iteration
+      upsilon_times_stdnormal=sweep(bootstrap_normals,MARGIN=2,upsilon_matrix[cp_dimension,],'*')
+      
+      # Apply the filter matrix to upsilon * z matrix for each time and scale
+      bootstrap_stats_specific_dim = abs(filter_matrix_specific_dim%*%t(upsilon_times_stdnormal))
+      
+      # normalization constants for each filter
+      normalization_constants_specific_dim=normalization_constants[normalization_constants$dimension==cp_dimension,
+                                                                   c('sd','t_index')]
+      
+      # match the normalization constant with the correct time in the same order of the filter matrix
+      # for this specific dimension
+      filter_matrix_specific_dim_dictionary=join(filter_matrix_specific_dim_dictionary,normalization_constants_specific_dim,
+                                                 by='t_index')
+      
+      # Apply normalization to all of the bootstrap statistics
+      bootstrap_stats_specific_dim=sweep(bootstrap_stats_specific_dim,
+                                         MARGIN=1,
+                                         filter_matrix_specific_dim_dictionary$sd,
+                                         '/')
+      
+      # Determine what times to delete (since we already identified them as jumps
+      # and don't want to consider small neighbourhood around them)
+      cp_already_identified_in_dim=c()
+ 
+      for(i in changepoints_identified){
+        if(i['dim']==cp_dimension){
+          cp_already_identified_in_dim=c(cp_already_identified_in_dim,i['t_index'])
+        }
+      }
+      
+      t_index_to_delete_all_cp=c()
+      for(i in cp_already_identified_in_dim){
+        t_index_to_delete_all_cp=c(t_index_to_delete_all_cp,seq(i-deletion_window_size,
+                                                  i+deletion_window_size))
+      }
+      
+      # Determine which rows of bootstrap_stats_specific_dim correspond to these times, and
+      # set their bootstrap stats to 0
+      t_index_to_delete_filter_matrix_rows=as.numeric((filter_matrix_specific_dim_dictionary$t_index%in%t_index_to_delete_all_cp)==FALSE)
+      
+      bootstrap_stats_specific_dim=sweep(bootstrap_stats_specific_dim,
+                                         MARGIN=1,
+                                         t_index_to_delete_filter_matrix_rows,
+                                         '*')
+      
+      # Take maximum statistic for each bootstrap iteration and add it to the matrix
+      # bootstrap_evidence
+      bootstrap_evidence[cp_dimension,]=apply(bootstrap_stats_specific_dim,2,max)
+      
+    }else{
+      exit_loop=1
+    }
+
+  }
+  
+  # For jumps that have been identified, run a second stage refinement to better estimate
+  # jump locations.
+  second_stage_changepoints = second_stage_refine(changepoints_identified,
+                                                  x_matrix,scale_count_list)
+  ss_cp_df = data.frame(dim=character(),
+                        scale_count=character(), 
+                        t_index=character(),
+                        stringsAsFactors=FALSE)
+  
+  if(length(second_stage_changepoints)>=1){
+    for(i in seq(1,length(second_stage_changepoints))){ss_cp_df[i,]=second_stage_changepoints[[i]]}
+  }
+  
+  ss_cp_df[,'t_index']=as.numeric(ss_cp_df[,'t_index'])
+  
+  # If we only want the bootstraps and test statistics return that, otherwise
+  # return the changepoints detected via the second stage refinement method
+  if(!is.null(output_bootstraps_and_teststat)){
+    return(bootstrap_teststat_list)
+  }else{
+    return(ss_cp_df)  
+  }
+  
+}
+
+#### EVALUATE SIMULATIONS ####
+evaluate_changepoints<-function(estimated_changepoint_locations,
+                                true_changepoint_locations,
+                                margin_of_error,
+                                p,n){
+  # This functions takes a set of estimated jump locations, and a set of 
+  # true jump locations, and returns a number of performance metrics
+  
+  # INPUTS
+  # estimated_changepoint_locations - a dataframe with jump locations, this dataframe
+  #                                   must have columns 'dim' and 't' representing the dimension
+  #                                   the jump occured in and the time, in  [0,1] that it
+  #                                   occurred. Note it can contain other columns but this
+  #                                   will not affect the evaluation
+  # true_changepoint_locations - the locations of the jump (as they were added when the
+  #                              data was generated), contains column 'dim' and 't'
+  # margin_of_error - tolerance for how far away from true value, an estimated value can be for it
+  #                   to be considered a successful idenification, units in time in [0,1] (e.g. could
+  #                   be .0001)
+  # p - total dimensions of the time series
+  # n - sample size
+
+  # OUTPUT 
+  # results_vector - a vector with a number of performance metrics
+  
+  # Setup Experiment Results DF
+  results_vector <- data.frame(m_n=numeric(),      # true number of CP
+                           m_hat_n=numeric(),      # number of identified CP
+                           correct_cp=numeric(),   # number of correctly identified CP
+                           dim_cp=numeric(),       # number of dimensions with CP
+                           dim_hat_cp = numeric(), # number of dimensions where we correctly ID'd number of CP
+                           MAD = numeric(),        # mean abolute deviation of estimated vs  actual value of CPs
+                           stringsAsFactors=FALSE) 
+  
+  # Experiment 'correct' values
+  if(length(true_changepoint_locations)==2){m_n=1
+  }else{
+    m_n = length(true_changepoint_locations[,1])
+  }
+  
+  results_vector[1,'m_n']=m_n # actual number jumps
+  results_vector[1,'m_hat_n']=dim(estimated_changepoint_locations)[1] # number of jumps estimated
+  
+  # Vector with the number of true jumps per dimension
+  true_cp_per_dim = rep(0,p)
+  
+  # Case where more than one jump
+  if(length(true_changepoint_locations)==2){
+    true_cp_per_dim[true_changepoint_locations[,'dim'][1]]=1
+  }else{
+    for(j in c(true_changepoint_locations[,1])){
+      true_cp_per_dim[j]=true_cp_per_dim[j]+1
+    }
+  }
+  
+  est_cp_per_dim=rep(0,p)
+  cor_cp_per_dim=rep(0,p)
+  MAD_total=0
+  
+  # Go through each dimension and determine how many jumps were correctly estimated
+  
+  # Case where only one jump
+  if(length(true_changepoint_locations)==1){
+    correct_cp_count = 0 
+    
+    cp_dim=true_changepoint_locations[,'dim']
+    cp_t=true_changepoint_locations[,'t']
+    est_cp_per_dim[cp_dim]=1
+    
+    list_of_cp_to_check=estimated_changepoint_locations[estimated_changepoint_locations[,'dim']%in%cp_dim,'t_index']/n
+    
+    for(h in list_of_cp_to_check){
+      if(n*abs(h-cp_t)<=(round(n*margin_of_error))){
+        correct_cp_count=correct_cp_count+1
+        MAD_total=MAD_total+abs(h-cp_t)  
+      }
+    }
+    
+    cor_cp_per_dim[cp_dim]=correct_cp_count
+  }else{
+    
+    for(j in seq(1,p)){
+      correct_cp_count = 0 # correct number of jumps in a dimension
+      list_of_cp_to_check=estimated_changepoint_locations[estimated_changepoint_locations[,'dim']==j,'t_index']
+      est_cp_per_dim[j]=length(list_of_cp_to_check)
+      
+      # if in a given dimension there are actually jump then check if we correctly estimated them
+      if(length(true_changepoint_locations[true_changepoint_locations[,'dim']==j,'t'])>0){
+        for(h in list_of_cp_to_check){
+          # for an estimated jump, find the closest true jump to it
+          closest_true_cp = which.min(abs(h/n-true_changepoint_locations[true_changepoint_locations[,'dim']==j,'t']))
+          closest_true_cp = true_changepoint_locations[true_changepoint_locations[,'dim']==j,'t'][closest_true_cp]
+          
+          # if for a given jump it is within the margin of error of a true jump 
+          # we count it as a correct jump
+          # note I use round here because if I did not use round it was giving me strange errors,
+          # I suspect related to how margin_of_error is stored in memory
+          if(round(n*abs(h/n-closest_true_cp))<=round(n*margin_of_error)){
+            correct_cp_count=correct_cp_count+1
+            # add estimation error to MAD total
+            MAD_total=MAD_total+abs(h/n-closest_true_cp)
+          }
+          
+        }
+        cor_cp_per_dim[j]=correct_cp_count  
+      }
+    }
+  }
+  
+  results_vector[1,'correct_cp']=sum(cor_cp_per_dim)
+  results_vector[1,'dim_cp']=sum(true_cp_per_dim>0)
+  results_vector[1,'dim_hat_cp']=sum((cor_cp_per_dim==true_cp_per_dim)&(true_cp_per_dim>0))
+  if(sum(cor_cp_per_dim)==0){
+    results_vector[1,'MAD']=0  
+  }else{
+    results_vector[1,'MAD']=MAD_total/sum(cor_cp_per_dim)  
+  }
+  
+  return(results_vector)
+  
+}
+
+### Power Summary Statistics ###
+power_summary_statistics<-function(results_df,
+                                   K,
+                                   scenario,
+                                   test_type,
+                                   gamma,
+                                   s,
+                                   p,
+                                   jump_size,
+                                   sim_result_dir){
+  
+  # This function takes the result from K power experiments, and outputs summary
+  # statistics to a CSV file
+  
+  # INPUTS
+  # results_df - a dataframe of the results of the power simulations (with inputs
+  #              from function evaluate_changepoints)
+  # K - num experiments
+  # scenario, test_type, gamma,s,p,jump_size - characteristics of an experiment
+  # sim_result_dir - where the CSV with the summary statistics is written to
+  
+  # OUTPUT 
+  # CSV file written to sim_result_dir
+  # After all experiments for a given set of parameters has been run
+  pct_perfect = sum((results_df[,'m_n']==results_df[,'m_hat_n'])&(results_df[,'m_n']==results_df[,'correct_cp']))/K
+  pct_perfect_dim = sum(results_df[,'dim_cp']==results_df[,'dim_hat_cp'])/K
+  avg_correct_cp = mean(results_df[results_df[,'m_n']>0,'correct_cp']/results_df[results_df[,'m_n']>0,'m_n'])
+  avg_correct_dim = mean(results_df[results_df[,'m_n']>0,'dim_hat_cp']/results_df[results_df[,'m_n']>0,'dim_cp'])
+  avg_MAD = mean(results_df[,'MAD'])
+  avg_m_hat_n = mean(results_df[,'m_hat_n'])
+  
+  # placeholder values of -1 for avg correct cp/avg correct dim (if never a CP)  
+  if(sum(results_df[,'m_n']>0)==0){
+    avg_correct_cp=-1
+    avg_correct_dim=-1 
+  }
+  
+  results_file_name = paste('P',
+                            'sce',scenario,
+                            'param',gamma,
+                            test_type,
+                            'p',sprintf("%04d", p),
+                            min(s),max(s),
+                            'jmp',jump_size,
+                            '%per',round(pct_perfect,2),
+                            '%perdim',round(pct_perfect_dim,2),
+                            'avgcorcp',round(avg_correct_cp,2),
+                            'avgcordim',round(avg_correct_dim,2),
+                            'avgMAD1k',round(avg_MAD*1000,2),
+                            'm_hat_n',round(avg_m_hat_n,0))
+  
+  setwd(sim_result_dir)
+  write.csv(results_df,file=paste(results_file_name,'.csv'),row.names=FALSE)
+  print(results_file_name)
+  
+}
+
+
+evaluate_changepoints_compare <- function(true_changepoint_locations,
+                                          margin_of_error,
+                                          results_df,
+                                          changepoints_by_method_list,
+                                          scenario,n,K,
+                                          signal_to_noise,gamma){
+  # This function takes a list of jumps identified by the four methods tested and
+  # compares them to the true jump locations, and then updates results_df
+  # appropriately based on the scenario
+  # note signal_to_noise an input to deal with case where jump_size=0
+  
+  # INPUT
+  # true_changepoint_locations  - a df with the dim and time of the true jumps
+  # margin_of_error             - a value within [0,1] about how far away a detected jump
+  #                               can be to be labelled as correct
+  # results_df                  - a dataframe with parameters from the simulation, and what results
+  #                               we are recording
+  # changepoints_by_method_list - a list which has the jumps detected by different methods
+  #                               the entries are as follows [[1]] sparse, [[2]] dblcusum
+  #                                                          [[3]] chenwangwu, [[4]] mjpdhd
+  #                               [[1]],[[2]],[[3]] are vectors, whereas [[4]] is a dataframe with
+  #                               both dimension and time where the cp was located
+  # scenario, n, k, snr, gamma  - parameters from the simulation being run
+  
+  # OUTPUT
+  # results_df
+  #
+  # NOTE
+  # here for the calculation of MJPD MAD we are assuming that in a dimension jumps
+  # are at least 1 margin of error apart (this is fine for our simulations)
+  
+  for(i in seq(1,4)){
+    
+    cp_located=changepoints_by_method_list[[i]]
+    
+    # for AJDN jumps need to take only the times they were located at
+    if(i==4){
+      cp_located=unique(cp_located[,'t_index'])
+    }
+    
+    # Set MAD to 999, if no jumps correctly identified
+    results_df[i,'MAD']=999
+    
+    if(scenario==1){
+      # Scenario 1 #
+      # CP in Gamma/2 dimensions at t=.25, t=.75
+      
+      true_cp_indexes=unique(true_changepoint_locations[,'t'])*n
+      distances=rep(0,length(true_cp_indexes))
+      final_cp_list=c()
+      
+      if(length(cp_located)>0){
+        for(j in seq(1,length(true_cp_indexes))){
+          distances[j]=min(abs(cp_located-true_cp_indexes[j]))
+        }
+        
+        # Finds CPs correctly detected, and then uses this to calc MAD
+        if(min(distances)<=round(margin_of_error*n)){
+          # only count distances that are within margin of error
+          MAD_distances=distances[distances<=round(margin_of_error*n)]
+          results_df[i,'MAD']=mean(MAD_distances)
+        }
+        
+        # If no CP, this makes every CP a large distance
+        if(signal_to_noise==0){
+          distances=distances+10000
+        }
+        
+        # Determine if all jumps were identified correctly 
+        if(max(distances)<=round(margin_of_error*n)){
+          results_df[i,'correct']=1
+
+          # Determine if all CP identified within margin of error
+          # of some true jump
+          min_distances=rep(10000,length(cp_located))
+          for(j in 1:length(min_distances)){
+            min_distances[j]=min(abs(cp_located[j]-true_cp_indexes))
+          }
+          
+          if(max(min_distances)<=round(margin_of_error*n)){
+            results_df[i,'perfect']=1
+          }
+        }
+        
+        # Check if we have identified each of the jumps
+        for(j in seq(1,length(true_cp_indexes))){
+          if(distances[j]<=round(margin_of_error*n)){
+            final_cp_list=c(final_cp_list,true_cp_indexes[j])
+          }
+        }
+        
+        # jumps that were not close to true CP
+        incorrect_cp = c()
+        
+        for(j in seq(1,length(cp_located))){
+          if(min(abs(cp_located[j]-true_cp_indexes))>round(margin_of_error*n)){
+            incorrect_cp=c(incorrect_cp,cp_located[j])
+          }
+        }
+        
+        final_cp_list=c(final_cp_list,incorrect_cp)
+        
+        results_df[i,'cp_found']=length(final_cp_list)
+        
+      }
+      
+    }else if(scenario==2){
+      # Scenario 2
+      # First cp at t=.2, last at t=.8
+      # Others spaced in between
+      
+      true_cp_indexes=unique(true_changepoint_locations[,'t'])*n
+      distances=rep(0,length(true_cp_indexes))
+      final_cp_list=c()
+      
+      if(length(cp_located)>0){
+        # Here because the jumps are potentially close together
+        # we need to take care to not double count jumps being
+        # identified
+        #
+        # To do this, we assume that the jumps found closest
+        # to the true jumps
+        
+        for(j in seq(1,length(true_cp_indexes))){
+          distances[j]=min(abs(cp_located-true_cp_indexes[j]))
+        }
+        
+        # If no CP, this makes every CP a large distance
+        if(signal_to_noise==0){
+          distances=distances+10000
+        }
+        
+        # Finds CPs correctly detected, and then uses this to calc MAD
+        if(min(distances)<=round(margin_of_error*n)){
+          # only count distances that are within margin of error
+          MAD_distances=distances[distances<=round(margin_of_error*n)]
+          results_df[i,'MAD']=mean(MAD_distances)
+        }
+        
+        # Determine if all jumps were identified correctly 
+        if(max(distances)<=round(margin_of_error*n)){
+          results_df[i,'correct']=1
+
+          # Determine if all CP identified within margin of error
+          # of some true jump
+          min_distances=rep(10000,length(cp_located))
+          for(j in 1:length(min_distances)){
+            min_distances[j]=min(abs(cp_located[j]-true_cp_indexes))
+          }
+          
+          if(max(min_distances)<=round(margin_of_error*n)){
+            results_df[i,'perfect']=1
+          }
+        }  
+        
+        # Check if we have identified each of the jumps
+        for(j in seq(1,length(true_cp_indexes))){
+          if(distances[j]<=round(margin_of_error*n)){
+            final_cp_list=c(final_cp_list,true_cp_indexes[j])
+          }
+        }
+        
+        # jumps that were not close to true CP
+        incorrect_cp = c()
+        
+        for(j in seq(1,length(cp_located))){
+          if(min(abs(cp_located[j]-true_cp_indexes))>round(margin_of_error*n)){
+            incorrect_cp=c(incorrect_cp,cp_located[j])
+          }
+        }
+        
+        final_cp_list=c(final_cp_list,incorrect_cp)
+        
+        results_df[i,'cp_found']=length(final_cp_list)
+        
+      }
+      
+    }
+    
+    # MAD Adjustment for MJPD
+    # here we are calculating MAD for MJPD in a different way than for the other methods
+    # mostly what we are doing is averaging the absolute deviation of correctly identified
+    # jumps across all dimensions (so if there are two CP identified within the 
+    # margin of error than we average the absolute deviation of both)
+    if(i==4){
+      absolute_deviation_sum=0
+      number_of_cps=0
+      mjpd_cp_df=changepoints_by_method_list[[i]]
+      mjpd_cp_df$dim=as.numeric(mjpd_cp_df$dim)
+      mjpd_cp_df$t_index=as.numeric(mjpd_cp_df$t_index)
+      
+      # a dataframe which has each true CP and finds if any CP detected it
+      true_cp_compare_detected=data.frame(true_changepoint_locations)
+      true_cp_compare_detected[,'detected_cp']=-1
+      
+      for(l in seq(1,dim(true_cp_compare_detected)[1])){
+        true_cp_index=round(true_cp_compare_detected$t[l]*n)
+        
+        # which dimension this specific CP was found in
+        cp_detected_in_dim=mjpd_cp_df[mjpd_cp_df$dim==true_cp_compare_detected$dim[l],]
+        
+        # if at least one CP detected in the dimension we care about
+        if(nrow(cp_detected_in_dim)>0){
+          # decide if a detected jump falls within the margin of error
+          # of this jump
+          min_distance=min(abs(cp_detected_in_dim$t_index-true_cp_index))
+          
+          if(min_distance<=round(margin_of_error*n)){
+            number_of_cps=number_of_cps+1
+            absolute_deviation_sum=absolute_deviation_sum+min_distance
+          }
+        }
+        
+      }
+      
+      if(number_of_cps>0){
+        results_df[i,'MAD']=absolute_deviation_sum/number_of_cps
+      }else{
+        results_df[i,'MAD']=999
+      }
+    }
+    
+  }
+  return(results_df)
+  
+}
+
+calc_bic<-function(time_series,cps_detected,s_prime){
+  # This function calculates BIC on an individual dimension of a time
+  # series based on the changepoints that were detected
+  # it is slightly different from calc_bic_3 in that it chooses
+  # a AR(2) model for the residuals 
+  # INPUT
+  # time_series         - a vector which is a time series
+  # cp_detected         - the indices at which changepoints were detected
+  # s_prime             - size of bootstrap
+  # OUTPUT
+  # bic                 - a numerical calculation for BIC
+  
+  n=length(time_series)
+  cps_detected=sort(cps_detected$t_index)
+  
+  # case of no changepoints just calculate error variance
+  if(length(cps_detected)==0){
+    
+    # Fit a nonparametric trend
+    x=seq(1,length(time_series))
+    y=as.numeric(time_series)
+    auto_bandwidth=dpill(x,y)
+    np_mean_est=locpoly(x,y,bandwidth = auto_bandwidth,gridsize=length(x))$y
+    
+    segment_residuals_raw=y-np_mean_est
+    
+    bic=n*log(sum(segment_residuals_raw**2)/n)+0
+    
+  }else{
+    start_indexes=c(1,cps_detected+1)
+    end_indexes=c(cps_detected,n)
+    error_segments=rep(0,length(start_indexes))
+    residuals=c(0)
+    
+    bandwidth_candidates=rep(0,length(start_indexes))
+    for(k in 1:(length(start_indexes))){
+      start_index=start_indexes[k]
+      end_index=end_indexes[k]
+      segment_length=end_index-start_index+1
+      x=seq(1,segment_length)
+      y=as.numeric(time_series[start_index:end_index])
+      
+      # Can throw errors if segment size very small, if this is the case
+      # use a default bandwidth of 1
+      bandwidth_candidates[k]=try(dpill(x,y),silent=TRUE)
+      
+    }
+    
+    # Choose middle bandwidth (if odd number take slightly bigger one)
+    bandwidth_selected=median(sort(bandwidth_candidates))
+    
+    for(k in 1:(length(start_indexes))){
+      start_index=start_indexes[k]
+      end_index=end_indexes[k]
+      segment_length=end_index-start_index+1
+      
+      x=seq(1,segment_length)
+      y=as.numeric(time_series[start_index:end_index])
+      
+      np_mean_est=locpoly(x,y,bandwidth = bandwidth_selected,gridsize=length(x))$y
+      
+      residuals=c(residuals,y-np_mean_est)
+
+    }
+    
+    # Calculate BIC by Zhou Frequency Detection and CP of Complex Oscillation
+    bic=n*log(sum(residuals**2)/n)+length(cps_detected)*log(n)
+    
+  }
+  
+  return(bic)
+  
+}
