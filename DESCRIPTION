@@ -11,7 +11,7 @@ LazyData: true
 Imports:
     doParallel,
     foreach,
-    locpoly
+    KernSmooth,
     MASS,
     Matrix,
     plyr
