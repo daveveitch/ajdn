@@ -14,7 +14,7 @@ create_W_filter(n, scale_count, t_index)
 \item{t_index}{the index associated with the time at the center of the filter}
 }
 \value{
-a vector of weights
+a vector of length n with weights that the filter takes
 }
 \description{
 Creates a vector of the optimal jump pass filter for a specific scale and time.

@@ -5,7 +5,7 @@
 #' @param n length of full time series
 #' @param scale_count rounded value of n*s where s is the scale
 #' @param t_index the index associated with the time at the center of the filter
-#' @return a vector of weights
+#' @return a vector of length n with weights that the filter takes
 #' @export
 #'
 #' @examples
@@ -41,3 +41,47 @@ create_W_filter <- function(n,scale_count,t_index){
 
   return(W_row)
 }
+
+#' Generate bootstrap matrix
+#'
+#' @description Generates the matrix used in the high dimensional block multiplier bootstrap
+#'
+#' @param x_matrix p x n (p = # dimensions, n = # obsrevations) matrix of time series
+#' @param s_prime block size parameter
+#' @return p x n matrix to be subsequently used in the block multiplier
+#' @export
+#'
+#' @examples
+#' x_matrix = matrix(rnorm(1000),nrow=10)
+#' generate_upsilon_matrix(x_matrix,1/100)
+generate_upsilon_matrix <- function(x_matrix,s_prime){
+  # This function calcuates the values used in the multiplier bootstrap, $\Upsilon_i$
+  # INPUT
+  # x_matrix       - p x n time series matrix
+  # s_prime        - block size being used
+  # OUTPUT
+  # upsilon_matrix - p x n matrix of values used in the multiplier bootstrap
+
+  n = dim(x_matrix)[2]
+  p = dim(x_matrix)[1]
+
+  upsilon_matrix = matrix(0,nrow=p,ncol=n)
+
+  # Since s_prime*n may be a fraction, and we need a whole
+  # number to construct the bootstrap so we round s_prime * n to do so
+  s_prime_round = round(s_prime*n)
+
+  for(i in seq(1,n)){
+    if(i<=(s_prime_round+1)){
+      upsilon_matrix[,i] = (rowSums(x_matrix[,1:s_prime_round,drop=FALSE])-rowSums(x_matrix[,(s_prime_round+1):(2*s_prime_round),drop=FALSE]))/sqrt(2*s_prime_round)
+    } else if((i>(s_prime_round+1))&(i<=(n-s_prime_round))){
+      upsilon_matrix[,i] = (rowSums(x_matrix[,(i-s_prime_round):(i-1),drop=FALSE])-rowSums(x_matrix[,i:(i+s_prime_round-1),drop=FALSE]))/sqrt(2*s_prime_round)
+
+    } else if(i>(n-s_prime_round)){
+      upsilon_matrix[,i] = (rowSums(x_matrix[,(n-2*s_prime_round+1):(n-s_prime_round),drop=FALSE])-rowSums(x_matrix[,(n-s_prime_round+1):n,drop=FALSE]))/sqrt(2*s_prime_round)
+    }
+  }
+
+  return(upsilon_matrix)
+}
+
