@@ -2,7 +2,7 @@ This is an R package used for jump detection (or changepoint detection) for high
 
 library(devtools)
 
-devtools::install_github("daveveitch/ajdn/ajdn")
+devtools::install_github("daveveitch/ajdn")
 
 A user's guide can be found at
 
