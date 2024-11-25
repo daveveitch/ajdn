@@ -15,4 +15,4 @@ Imports:
     MASS,
     Matrix,
     plyr
-    
+RoxygenNote: 7.3.2
