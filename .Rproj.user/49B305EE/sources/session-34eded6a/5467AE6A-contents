@@ -1,6 +1,6 @@
 #' Create W filter
 #'
-#' @description Creates a vector of the optimal jump pass filter for a specific scale and time.
+#' @description Creates a vector of the optimal jump pass filter for a n (length of time series), s (scale), and t (time)
 #'
 #' @param n length of full time series
 #' @param scale_count rounded value of n*s where s is the scale
@@ -10,6 +10,7 @@
 #'
 #' @examples
 #' w = create_W_filter(100,10,50)
+#' plot(w)
 create_W_filter <- function(n,scale_count,t_index){
   # This function creates a filter for a specific n,s,t
   # INPUT
