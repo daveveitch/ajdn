@@ -21,5 +21,4 @@ Creates a vector of the optimal jump pass filter for a specific scale and time.
 }
 \examples{
 w = create_W_filter(100,10,50)
-plot(w)
 }
