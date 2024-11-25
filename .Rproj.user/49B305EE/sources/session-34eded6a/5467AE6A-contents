@@ -10,7 +10,6 @@
 #'
 #' @examples
 #' w = create_W_filter(100,10,50)
-#' plot(w)
 create_W_filter <- function(n,scale_count,t_index){
   # This function creates a filter for a specific n,s,t
   # INPUT
