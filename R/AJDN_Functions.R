@@ -5,11 +5,12 @@
 #' @param n length of full time series
 #' @param scale_count rounded value of n*s where s is the scale
 #' @param t_index the index associated with the time at the center of the filter
-#' @return a vector
+#' @return a vector of weights
 #' @export
 #'
 #' @examples
-#' create_W_filter(100,10,50)
+#' w = create_W_filter(100,10,50)
+#' plot(w)
 create_W_filter <- function(n,scale_count,t_index){
   # This function creates a filter for a specific n,s,t
   # INPUT
