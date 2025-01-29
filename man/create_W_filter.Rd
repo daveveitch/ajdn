@@ -20,6 +20,6 @@ a vector of length n with weights that the filter takes
 Creates a vector of the optimal jump pass filter for a n (length of time series), s (scale), and t (time)
 }
 \examples{
-w = create_W_filter(100,10,50)
+w = create_W_filter(1000,100,300)
 plot(w)
 }

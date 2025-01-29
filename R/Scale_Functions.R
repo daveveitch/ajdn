@@ -339,19 +339,19 @@ var_1_LRV<-function(coef_matrix,noise_cov,max_lag){
 
 preprocess_s<-function(s,p,n){
   # This function takes the values of s provided to the AJDN function and preprocesses them
-  # into counts, and also creates lists of what values of s_star to test as well as what
-  # indexes of t to test
+  # into counts, and also calcualtes $T_r$ for each dimension (time indexes to test for jumps)
   # INPUTS
-  # s               - vector of scales (in 1/n form)
+  # s               - vector of scales (in 1/n form), or list of length p with vector of scales for each entry
   # p               - dimension
   # n               - time series length
   # OUTPUTS
   # preprocess_list - a list of lists, and one vector,
-  #                   where the first element is the scale count (scales in
-  #                   terms of number of observation), second is s_star_count (s_star in terms
-  #                   of number of observations), and third is t_index; each sublist contains p
-  #                   elements, corresponding to each dimension. Finally the last part of the list
-  #                   of 4 is a vector of unique scales
+  #                   [[1]] scale counts (scales in terms of number of observation,
+  #                                      e.g. n=100 s=0.05, scale count=5),
+  #                   [[2]] t indexes (indexes where we test for jumps, $T_r$ in paper)
+  #                   NOTE - preprocess_list[[1]] and [[2]] each contain p elements, corresponding to each dimension.
+  #                   [[3]] vector of unique scales across all dimensions. The reason we create this is to
+  #
 
   # If only one vector of scales is given we turn this into a list where each
   # dimension has the same set of scales
@@ -361,29 +361,30 @@ preprocess_s<-function(s,p,n){
       scale_list[[i]]=s
     }
   }else{
+    if(length(scale_list!=p)){
+        stop('Length of scale list must equal p')
+    }
     scale_list=s
   }
 
   # Here we convert the scale_list into scale_count_list which is the number of
-  # observations associated with the scale (used because this is easier to work with)
-  # also we compile a vector of unique scales and their counts
+  # observations associated with the scale (this is easier to work with for computations).
+  # Also we compile a vector of unique scales and their counts.
   scale_count_list=list()
-  s_star_count_list=list()
   unique_scales=c()
   for(i in seq(1,p)){
     scale_count_list[[i]]=round(scale_list[[i]]*n)
-    s_star_count_list[[i]]=min(scale_count_list[[i]])
     unique_scales=c(unique_scales,scale_list[[i]])
   }
   unique_scales=sort(unique(unique_scales))
   unique_scale_counts = unique(round(unique_scales*n))
 
   # Here we calculate the t_index_list which is a list of time indexes that
-  # we test for each dimension this is based on the maximum scale
+  # we test for each dimension this is based on the maximum scale ($T_r$ in paper for r=1,...,p)
   t_index_list=list()
   for(i in seq(1,p)){
     t_index_list[[i]]=seq(max(scale_count_list[[i]])+1,n-max(scale_count_list[[i]])-1,by=1)
   }
 
-  return(list(scale_count_list,s_star_count_list,t_index_list,unique_scale_counts))
+  return(list(scale_count_list,t_index_list,unique_scale_counts))
 }

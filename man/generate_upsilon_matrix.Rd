@@ -12,7 +12,7 @@ generate_upsilon_matrix(x_matrix, s_prime)
 \item{s_prime}{block size parameter}
 }
 \value{
-p x n matrix to be subsequently used in the block multiplier
+p x n matrix to be subsequently used in the block multiplier bootstrap
 }
 \description{
 Generates the matrix used in the high dimensional block multiplier bootstrap

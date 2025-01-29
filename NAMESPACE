@@ -2,3 +2,4 @@
 
 export(create_W_filter)
 export(generate_upsilon_matrix)
+export(second_stage_refine)
