@@ -1,0 +1,89 @@
+---
+title: "ajdn_walkthrough"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{ajdn_walkthrough}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(ajdn)
+```
+
+Here I will walk through a simple example of using AJDN on simulated data, and then one example on a real dataset.
+
+# Simulated Data Example
+
+
+First, we will simulate data using the same data generating process that was present in the paper. We will use the GS data generating process for $n=1000,\;p=10$.
+
+```{r simulate,dpi=300,fig.width=6, fig.height=4, out.width="100%"}
+set.seed(1)
+n = 1000
+p = 10
+snr = 5 # signal to noise ratio of jump
+dgp = 'GS'
+
+s_prime = ajdn::s_prime_select(dgp,n,p) # select block size of bootstrap
+s = scales_rot(n,p) # determine rule of thumb for scales to use
+
+noise_matrix = ajdn::generate_x_matrix(n,p,dgp,s) # generate PS noise
+jump_matrix = ajdn::add_changepoints_scaled(1,0.5,snr,noise_matrix,s) # generate matrix of jumps
+time_series_matrix = noise_matrix + jump_matrix[[1]]
+
+par(mar=c(5,5,2,2))
+plot(time_series_matrix[1,],xlab='n x t',ylab='',
+     main='Dimension 1 from Simulated GS Process \n with a Single Jump',type='l',cex.main=0.8)
+```
+
+Above we generate a time series where one jump occurs in dimensions 1,2,3 at $t=0.25$ and 4,5,6 at $t=0.75$, with dimensions 7,8,9,10 experiencing no jumps. The noise process is globally stationary (GS) and the variance increases at $t=0.5$.
+
+```{r find_cps,dpi=300,fig.width=6, fig.height=4, out.width="100%"}
+set.seed(1)
+B = 1000 # number of bootstraps to use
+alpha = 0.05 # Type I error
+
+cps_detected = ajdn::ajdn_detect_jumps(time_series_matrix,s,s_prime,B,alpha)
+
+print('Jumps Detected')
+print(cps_detected)
+```
+Now we plot out two dimensions with a jump, and one without, to see where the jumps were detected.
+
+```{r cp_plots,dpi=300,fig.width=6, fig.height=4, out.width="100%"}
+#par(mfrow=c(1,3))
+for(dim in c(1,5,10)){
+  par(mar=c(5,5,2,2))
+  plot(time_series_matrix[dim,],xlab='n x t',ylab='',main=paste('Dim',dim),type='l')
+  abline(v=cps_detected[cps_detected$dim==dim,'t_index'],col='red')
+}
+```
+
+# Real Data Example
+
+Now we turn to a real data example. Using the hyperparameters selected through a BIC method in the paper
+
+```{r real_data_detect,dpi=300,fig.width=6, fig.height=4, out.width="100%"}
+set.seed(1)
+B = 1000
+alpha = 0.05
+s = sparsify_scales(.027,.044,length(ajdn::stocks_data),nrow(ajdn::stocks_data))
+s_prime = 1/length(ajdn::stocks_data)
+
+cps_detected=ajdn::ajdn_detect_jumps(ajdn::stocks_data,s,s_prime,B,alpha)
+
+par(mar=c(5,5,2,2))
+plot(y=as.numeric(ajdn::stocks_data['AMZN',]),x=as.Date(colnames(ajdn::stocks_data)),
+     xlab='Date',ylab='AMZN/QQQ',main='AMZN jumps detected')
+abline(v=as.Date(colnames(ajdn::stocks_data))[cps_detected[cps_detected$dim==which(rownames(stocks_data)=='AMZN'),'t_index']]
+       ,col='red')
+```
+
