@@ -18,6 +18,8 @@ knitr::opts_chunk$set(
 library(ajdn)
 ```
 
+This package implements method from https://arxiv.org/abs/2410.23706. Any reference to equations/sections refers to v2 submitted on Saturday 23rd November 2024.
+
 Here I will walk through a simple example of using AJDN on simulated data, and then one example on a real dataset.
 
 # Simulated Data Example
@@ -86,4 +88,55 @@ plot(y=as.numeric(ajdn::stocks_data['AMZN',]),x=as.Date(colnames(ajdn::stocks_da
 abline(v=as.Date(colnames(ajdn::stocks_data))[cps_detected[cps_detected$dim==which(rownames(stocks_data)=='AMZN'),'t_index']]
        ,col='red')
 ```
+# Real Data Data-Driven Hyperparameter Select
 
+One way to select the hyperparameters $\underline{s},\bar{s},s'$ is via a BIC-inspired data-driven method outlined in the appendix of the paper. Below we run through a simple example based on the stock dataset.
+
+We use a rule of thumb to determine the max $s'$ to test ($s'_{\text{max}}$), and then based on assumption (B1) of the paper that jumps at least $2\bar{s}$ apart, we test a high scale of approximately 1/2 of a financial quarter (1/16 of the 2yr dataset we have).
+
+Here in order to limit the number of combinations of hyperparameters to test, using the rule of thumb scales (from Appendix B) we calculate $\bar{s}^*/\underline{s}^*$ for the $n,p$ we are working with, and then for a given $\bar{s}$ test the value of $\underline{s}$ such that $\bar{s}/\underline{s}=\bar{s}^*/\underline{s}^*$.
+
+```{r data_driven_hyperparameter,dpi=300,fig.width=6, fig.height=4, out.width="100%"}
+set.seed(1)
+B = 1000
+alpha = 0.05
+
+p = nrow(ajdn::stocks_data)
+n = ncol(ajdn::stocks_data)
+
+scale_to_test_number = 3
+
+# Create a dataframe of hyperparameters to test
+max_s_prime=round(n**(-2/3)*n)
+rot_s= ajdn::scales_rot(n,p)
+rot_ratio=rot_s[1]/rot_s[2]
+rot_scale_range=rot_s[2]-rot_s[1]
+potential_s_high=seq((1/16-rot_scale_range/2),1/16+rot_scale_range/2,length.out=scale_to_test_number)
+bic_experiment_df=expand.grid(s_prime=seq(1,max_s_prime,by=2),s_high=potential_s_high)
+bic_experiment_df[,c('bic','cps_detected')] = 0
+```
+
+Now for each combination of hyperparameters we wish to test, we will run AJDN, to detect jumps, and then based on these jumps calculate the penalized BIC decision criteria (section Appendix B.1.1 of paper). This BIC criteria can be accessed via the `ajdn::calc_bic` function
+
+```{r data_driven_hyperparameter_fit,dpi=300,fig.width=6, fig.height=4, out.width="100%"}
+for(i in 1:nrow(bic_experiment_df)){
+  s_prime=bic_experiment_df[i,'s_prime']/n
+  s_high=bic_experiment_df[i,'s_high']
+  s_low=s_high*rot_ratio
+  s = ajdn::sparsify_scales(s_low,s_high,n,p)
+
+  cps_detected= ajdn::ajdn_detect_jumps(stocks_data,s,s_prime,B,alpha)
+
+  bic_sum=0
+  for(j in 1:p){
+    bic_sum=bic_sum+ajdn::calc_bic(stocks_data[j,],
+                                cps_detected[cps_detected$dim==j,],
+                                s_prime)
+  }
+  bic_experiment_df[i,c('bic','cps_detected')] = c(bic_sum,nrow(cps_detected))
+}
+
+round(bic_experiment_df[order(bic_experiment_df$'bic'),],3)
+```
+
+Based on the above dataframe we see that $\bar{s}=0.043$ is optimal for the hyperparameters tested. This aligns closely with the value found in the paper (and result is shown in above section Real Data Example).
