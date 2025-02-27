@@ -88,6 +88,7 @@ plot(y=as.numeric(ajdn::stocks_data['AMZN',]),x=as.Date(colnames(ajdn::stocks_da
 abline(v=as.Date(colnames(ajdn::stocks_data))[cps_detected[cps_detected$dim==which(rownames(stocks_data)=='AMZN'),'t_index']]
        ,col='red')
 ```
+
 # Real Data Data-Driven Hyperparameter Select
 
 One way to select the hyperparameters $\underline{s},\bar{s},s'$ is via a BIC-inspired data-driven method outlined in the appendix of the paper. Below we run through a simple example based on the stock dataset.

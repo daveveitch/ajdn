@@ -4,4 +4,4 @@ library(devtools)
 
 devtools::install_github("daveveitch/ajdn")
 
-See the vingette for an example to run on real and simulated data.
+See the vingette for an example run on both real and simulated data.
