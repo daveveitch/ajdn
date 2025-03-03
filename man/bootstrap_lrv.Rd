@@ -18,5 +18,7 @@ a vector of long run variances of multiplier bootstrap corresponding to the diff
 This function estimates the long run variance of the multiplier bootstrap
 }
 \examples{
-print('enter example here')
+s_prime_list = c(1,2,3,4,5)
+autocovariances = c(1,1,.5,.25,-.25,0,0,0,0,0,0,0)
+ajdn::bootstrap_lrv(s_prime_list,autocovariances)
 }

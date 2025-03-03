@@ -2,7 +2,7 @@
 % Please edit documentation in R/Scale_Functions.R
 \name{s_prime_max_rot}
 \alias{s_prime_max_rot}
-\title{\eqn{s'_\text{max}} rule of thumb}
+\title{rule of thumb for \eqn{s'_\text{max}}}
 \usage{
 s_prime_max_rot(n)
 }
@@ -10,7 +10,7 @@ s_prime_max_rot(n)
 \item{n}{length of time series}
 }
 \value{
-scalar number
+scalar number (i.e. \eqn{ns'})
 }
 \description{
 Calculates rule of thumb values for \eqn{s'_\text{max}}

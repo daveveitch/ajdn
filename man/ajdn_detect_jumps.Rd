@@ -56,5 +56,7 @@ dataframe of jumps detected
 Detects jumps using AJDN algorithm
 }
 \examples{
-print('write example here')
+x_matrix = matrix(rnorm(2000),nrow=2)
+x_matrix[1,501:1000] = x_matrix[1,501:1000] + 5
+ajdn::ajdn_detect_jumps(x_matrix,c(.05),.001,1000,.05)
 }

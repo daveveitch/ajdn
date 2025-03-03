@@ -19,5 +19,5 @@ Generates the matrix used in the high dimensional block multiplier bootstrap
 }
 \examples{
 x_matrix = matrix(stats::rnorm(1000),nrow=10)
-ajdn::generate_upsilon_matrix(x_matrix,1/100)
+upsilon_matrix = ajdn::generate_upsilon_matrix(x_matrix,1/100)
 }

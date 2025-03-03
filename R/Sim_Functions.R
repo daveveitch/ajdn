@@ -262,6 +262,7 @@ var_1_LRV<-function(coef_matrix,noise_cov,max_lag){
 #' @export
 #' @examples
 #' ex_ts = ajdn::generate_x_matrix(1000,100,'GST',c(.05,.06))
+#' plot(ex_ts[1,],main='Example GST Process',xlab='',ylab='')
 generate_x_matrix<-function(n,p,dgp,s,x_matrix_split=NULL){
 
    mean_matrix=matrix(data=rep(0,n*p),nrow=p,ncol=n)
@@ -469,6 +470,7 @@ generate_x_matrix<-function(n,p,dgp,s,x_matrix_split=NULL){
 #' @examples
 #' noise_matrix = ajdn::generate_x_matrix(1000,100,'IID',c(.05,.06))
 #' mean_matrix = ajdn::generate_means(noise_matrix,c(.05,.06))
+#' plot(mean_matrix[1,],main='Scaled mean added to dimension 1',xlab='',ylab='')
 generate_means<-function(noise_matrix,s){
    p=dim(noise_matrix)[1]
    n=dim(noise_matrix)[2]

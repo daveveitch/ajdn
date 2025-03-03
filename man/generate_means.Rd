@@ -20,4 +20,5 @@ This function generates sin curve means with slightly different phases in each d
 \examples{
 noise_matrix = ajdn::generate_x_matrix(1000,100,'IID',c(.05,.06))
 mean_matrix = ajdn::generate_means(noise_matrix,c(.05,.06))
+plot(mean_matrix[1,],main='Scaled mean added to dimension 1',xlab='',ylab='')
 }

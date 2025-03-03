@@ -26,4 +26,5 @@ This function generates simulated time series as used in the paper.
 }
 \examples{
 ex_ts = ajdn::generate_x_matrix(1000,100,'GST',c(.05,.06))
+plot(ex_ts[1,],main='Example GST Process',xlab='',ylab='')
 }

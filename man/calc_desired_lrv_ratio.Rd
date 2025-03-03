@@ -16,5 +16,5 @@ LRV ratio (a scalar)
 This funtion calculates the desired LRV ratio based on n (see Appendix B.1 on selection of hyperparameters for further description).
 }
 \examples{
-calc_desired_lrv_ratio(2000)
+ajdn::calc_desired_lrv_ratio(2000)
 }

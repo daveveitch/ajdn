@@ -18,19 +18,19 @@ scales_rot<-function(n,p){
   return(s_rot)
 }
 
-#' \eqn{s'_\text{max}} rule of thumb
+#' rule of thumb for \eqn{s'_\text{max}}
 #'
 #' @description Calculates rule of thumb values for \eqn{s'_\text{max}}
 #'
 #' @param n length of time series
-#' @return scalar number
+#' @return scalar number (i.e. \eqn{ns'})
 #' @export
 #' @examples
 #' ajdn::s_prime_max_rot(1000)
 s_prime_max_rot<-function(n){
-  return(round(n**(1/3)))
+  s_prime_max = round(n**(1/3))
+  return(s_prime_max)
 }
-
 
 #' Sparsify scales
 #'
@@ -91,8 +91,7 @@ sparsify_scales<-function(s_low,s_high,n,p,max_scales=NULL,epsilon=.51){
 #' @return LRV ratio (a scalar)
 #' @export
 #' @examples
-#' calc_desired_lrv_ratio(2000)
-#
+#' ajdn::calc_desired_lrv_ratio(2000)
 calc_desired_lrv_ratio<-function(n){
   bias=1+.85/log(n)
   return(bias)
@@ -108,7 +107,9 @@ calc_desired_lrv_ratio<-function(n){
 #' @return a vector of long run variances of multiplier bootstrap corresponding to the different \eqn{s'} we tested
 #' @export
 #' @examples
-#' print('enter example here')
+#' s_prime_list = c(1,2,3,4,5)
+#' autocovariances = c(1,1,.5,.25,-.25,0,0,0,0,0,0,0)
+#' ajdn::bootstrap_lrv(s_prime_list,autocovariances)
 bootstrap_lrv<-function(s_prime_list,autocovariances){
   lrv_list=rep(0,length(s_prime_list))
 
@@ -152,8 +153,8 @@ bootstrap_lrv<-function(s_prime_list,autocovariances){
 #'                   3rd entry - vector of unique scales across all dimensions. The reason we create this is to
 #' @export
 #' @examples
-#' a = ajdn::preprocess_s(c(.02,.04),2,1000)
-#' print(a)
+#' processed_s = ajdn::preprocess_s(c(.02,.04),2,1000)
+#' print(processed_s)
 preprocess_s<-function(s,p,n){
   # If only one vector of scales is given we turn this into a list where each
   # dimension has the same set of scales

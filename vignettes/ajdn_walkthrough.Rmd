@@ -1,5 +1,5 @@
 ---
-title: "ajdn_walkthrough"
+title: "AJDN Walkthrough"
 output: rmarkdown::html_vignette
 vignette: >
   %\VignetteIndexEntry{ajdn_walkthrough}
@@ -18,15 +18,15 @@ knitr::opts_chunk$set(
 library(ajdn)
 ```
 
-This package implements method from https://arxiv.org/abs/2410.23706. Any reference to equations/sections refers to those in version v2 submitted to arXiv on Saturday 23rd November 2024.
+This package implements the jump detection method from https://arxiv.org/abs/2410.23706. Any reference to equations/sections refers to those in version v2 submitted to arXiv on Saturday 23rd November 2024.
 
-Here I will walk through a simple example of using AJDN on simulated data, and then one example on a real dataset.
+Here we will walk through a simple example of using AJDN on simulated data, and then one example on a real dataset.
 
 # Simulated Data Example
 
 First, we will simulate data using one of the same data generating processes that was presented in the paper. We will use the GS data generating process for $n=1000,\;p=10$. We add jumps based on Scenario 1 of the power simulations with $\gamma=0.2$; this means there is a jump in dimension 1 at $t=0.25$ and a jump in dimension 2 at $t=0.75$. The jumps are scaled to be of size 5 standard deviations of the error process.
 
-We will first calculate the rule of thumb scales from appendix B to use for $\underline{s},\bar{s}$ (scales the same in every dimension), and then use `ajdn::sparsify_scales()` to generate a sparse sequence of scales between this range. Then we generate the error matrix and mean matrix (in this case the mean matrix contains the jumps). 
+We will first calculate the rule of thumb scales from Appendix B to use for $\underline{s},\bar{s}$ (we use the same scales the same in every dimension), and then use `ajdn::sparsify_scales()` to generate a sparse sequence of scales between this range. Then we generate the error matrix and mean matrix (in this case the mean matrix contains the jumps). 
 
 ```{r simulate_setup,dpi=300,fig.width=6, fig.height=4, out.width="100%"}
 set.seed(1)
@@ -52,7 +52,7 @@ s_prime = ajdn::s_prime_select(dgp,n,p)
 cat("s' using s_prime_select function ",s_prime)
 ```
 
-Below is what would happen if we wished to use the sample autocovariance to try and select $s'$ based off of this rule of thumb. When using the rule of thumb to select $s'$, choose a representative dimension, and a region where there are no jumps in order to calculate the sample autocovariance. In this case I choose all datapoints from dimension 10 as there is no jump in this dimension. Then I calculate Equation 265 for a $s'=1,\dots,ns'_\text{max}$ and choose the $s'$ which makes this ratio as close to the rule of thumb provided in Appendix B.1.
+Below is what would happen if we wished to use the rule of thumb and the sample autocovariance to try and select $s'$. When using the rule of thumb to select $s'$, choose a representative dimension, and a region where there are no jumps in order to calculate the sample autocovariance. In this case we choose all datapoints from dimension 10 as there is no jump in this dimension. Then we calculate Equation 265 for a $s'=1,\dots,ns'_\text{max}$ and choose the $s'$ which makes this ratio as close to the rule of thumb provided in Appendix B.1.
 
 ```{r sample_autocov_s_prime_select,dpi=300,fig.width=6, fig.height=4, out.width="100%"}
 # s_prime_max = ajdn::s_prime_max_rot(n)
@@ -67,7 +67,7 @@ Below is what would happen if we wished to use the sample autocovariance to try 
 # cat("s' using sample autocovariance and rule of thumb =",s_prime_rot)
 ```
 
-Now that the hyperparameters are selected, we can run AJDN
+Now that the hyperparameters are selected, we can run AJDN. We find both jumps, one at $t=0.25$ in dimension 1 and one at $t=0.75$ in dimension 2.
 
 ```{r find_cps,dpi=300,fig.width=6, fig.height=4, out.width="100%"}
 set.seed(1)
@@ -93,7 +93,7 @@ We also note that if using the value of $s'$ calculated using the sample autocov
 # print(cps_detected)
 ```
 
-Now we plot out two dimensions with a jump, and one without, to see where the jumps were detected. A practical note is that if a jump is detected at index $i$ then this implies the mean is significantly different between index $i$ and index $i+1$.
+Now we plot out two dimensions with a jump, and one without, to see where the jumps were detected. As a reminder, if a jump is detected at index $i$ then this implies the mean is significantly different between index $i$ and index $i+1$.
 
 ```{r cp_plots,dpi=300,fig.width=6, fig.height=4, out.width="100%"}
 #par(mfrow=c(1,3))
@@ -124,15 +124,15 @@ abline(v=as.Date(colnames(ajdn::stocks_data))[cps_detected[cps_detected$dim==whi
        ,col='red')
 ```
 
-# Real Data Data-Driven Hyperparameter Select
+# Real Data Example - Data-Driven Hyperparameter Select
 
 One way to select the hyperparameters $\underline{s},\bar{s},s'$ is via a BIC-inspired data-driven method outlined in Appendix B.1.1 of the paper. Below we run through a simple example based on the stock dataset.
 
-We use a rule of thumb to determine the max $s'$ to test ($s'_{\text{max}}$), and then based on assumption (B1) of the paper that jumps at least $2\bar{s}$ apart, we test a high scale of approximately 1/2 of a financial quarter (1/16 of the 2yr dataset we have).
+We use a rule of thumb to determine the max $s'$ to test (i.e., $s'_{\text{max}}$), and then based on assumption (B1) of the paper that jumps at least $2\bar{s}$ apart, we test a high scale of approximately 1/2 of a financial quarter (this corresponds to $s=1/16$ since our dataset covers two years).
 
 Here in order to limit the number of combinations of hyperparameters to test, using the rule of thumb scales (from Appendix B) we calculate $\bar{s}^*/\underline{s}^*$ for the $n,p$ we are working with, and then for a given $\bar{s}$ test the value of $\underline{s}$ such that $\bar{s}/\underline{s}=\bar{s}^*/\underline{s}^*$. 
 
-The range of scales to test is up to the discretion of the user. Testing $\underline{s}$ around $\underline{s}^*$, and similarly testing $\bar{s}$ around $\bar{s}^*$ is a reasonable approach. Alternatively if the user has any preexisting knoweldge of the data (e.g. how far jumps may be spaced apart) this could be useful to inform what scales to test. In our experience $s'$ is usually selected to be small, and the selection of $s'$ has a greater effect on the sensitivity of the method than the selection of $\underline{s},\bar{s}$.
+The range of scales to test is up to the discretion of the user. Testing $\underline{s}$ around $\underline{s}^*$, and similarly testing $\bar{s}$ around $\bar{s}^*$ is a reasonable approach. Alternatively if the user has any preexisting knoweldge of the data (e.g. how far jumps may be spaced apart) this could be useful to inform what scales to test. In our experience on real data, $s'$ is usually selected to be small, and the selection of $s'$ has a greater effect on the sensitivity of the method than the selection of $\underline{s},\bar{s}$.
 
 ```{r data_driven_hyperparameter,dpi=300,fig.width=6, fig.height=4, out.width="100%"}
 set.seed(1)
@@ -145,7 +145,7 @@ n = ncol(ajdn::stocks_data)
 scale_to_test_number = 3
 
 # Create a dataframe of hyperparameters to test
-max_s_prime=round(n**(-2/3)*n)
+max_s_prime = s_prime_max_rot(n)
 rot_s= ajdn::scales_rot(n,p)
 rot_ratio=rot_s[1]/rot_s[2]
 rot_scale_range=rot_s[2]-rot_s[1]
@@ -154,7 +154,7 @@ bic_experiment_df=expand.grid(s_prime=seq(1,max_s_prime,by=2),s_high=potential_s
 bic_experiment_df[,c('bic','cps_detected')] = 0
 ```
 
-Now for each combination of hyperparameters we wish to test, we will run AJDN, to detect jumps, and then based on these jumps calculate the penalized BIC decision criteria (section Appendix B.1.1 of paper). This BIC criteria can be accessed via the `ajdn::calc_bic` function
+Now for each combination of hyperparameters we wish to test, we will run AJDN to detect jumps, and then based on these jumps calculate the penalized BIC decision criteria (section Appendix B.1.1 of paper). This BIC criteria can be accessed via the `ajdn::calc_bic()` function
 
 ```{r data_driven_hyperparameter_fit,dpi=300,fig.width=6, fig.height=4, out.width="100%"}
 for(i in 1:nrow(bic_experiment_df)){

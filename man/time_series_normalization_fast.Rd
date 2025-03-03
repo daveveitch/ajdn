@@ -28,6 +28,3 @@ a dataframe, with the local sd, time index, and dimension
 This function calculates an estimate of the standard deviation of a time series at each time point
 when the scales \eqn{s} are the same for every dimension. This is generally significantly faster than time_series_normalization.
 }
-\examples{
-print('example here')
-}

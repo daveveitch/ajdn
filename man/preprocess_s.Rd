@@ -25,6 +25,6 @@ NOTE - 1st and 2nd entry each contain p elements, corresponding to each dimensio
 Preprocesses scales into counts and \eqn{T_r} for each dimension
 }
 \examples{
-a = ajdn::preprocess_s(c(.02,.04),2,1000)
-print(a)
+processed_s = ajdn::preprocess_s(c(.02,.04),2,1000)
+print(processed_s)
 }

@@ -44,7 +44,7 @@ create_W_filter <- function(n,scale_count,t_index){
 #' @export
 #' @examples
 #' x_matrix = matrix(stats::rnorm(1000),nrow=10)
-#' ajdn::generate_upsilon_matrix(x_matrix,1/100)
+#' upsilon_matrix = ajdn::generate_upsilon_matrix(x_matrix,1/100)
 generate_upsilon_matrix <- function(x_matrix,s_prime){
   n = dim(x_matrix)[2]
   p = dim(x_matrix)[1]
@@ -82,7 +82,6 @@ generate_upsilon_matrix <- function(x_matrix,s_prime){
 #' @param ss_refine_alpha_tilde constant from paper
 #' @return a list of same length as first_stage_changepoints with the refined estimate of the time index where the jump occurs
 #' @export
-#'
 second_stage_refine <-function(first_stage_changepoints,x_matrix,scale_count_list,ss_refine_alpha_tilde){
 
   n = dim(x_matrix)[2]
@@ -148,7 +147,6 @@ second_stage_refine <-function(first_stage_changepoints,x_matrix,scale_count_lis
 #' @return a dataframe, with the local sd, time index, and dimension
 #' @importFrom foreach %dopar%
 #' @export
-#'
 time_series_normalization <-function(x_matrix,t_index_list,scale_count_list,num_cores=NULL,loud=NULL){
   p = dim(x_matrix)[1]
   n = dim(x_matrix)[2]
@@ -218,8 +216,6 @@ time_series_normalization <-function(x_matrix,t_index_list,scale_count_list,num_
 #' @return a dataframe, with the local sd, time index, and dimension
 #' @importFrom foreach %dopar%
 #' @export
-#' @examples
-#' print('example here')
 time_series_normalization_fast <-function(x_matrix,t_index_list,scale_count_list,loud=NULL){
   p = dim(x_matrix)[1]
   n = dim(x_matrix)[2]
@@ -380,7 +376,9 @@ create_filter_matrix <- function(n,unique_scale_counts){
 #' @export
 #'
 #' @examples
-#' print('write example here')
+#' x_matrix = matrix(rnorm(2000),nrow=2)
+#' x_matrix[1,501:1000] = x_matrix[1,501:1000] + 5
+#' ajdn::ajdn_detect_jumps(x_matrix,c(.05),.001,1000,.05)
 ajdn_detect_jumps<-function(x_matrix,
                             s,
                             s_prime,
