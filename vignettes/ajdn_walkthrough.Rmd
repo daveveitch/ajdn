@@ -1,5 +1,5 @@
 ---
-title: "AJDN Walkthrough"
+title: "ajdn_walkthrough"
 output: rmarkdown::html_vignette
 vignette: >
   %\VignetteIndexEntry{ajdn_walkthrough}
