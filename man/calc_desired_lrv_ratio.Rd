@@ -2,7 +2,7 @@
 % Please edit documentation in R/Scale_Functions.R
 \name{calc_desired_lrv_ratio}
 \alias{calc_desired_lrv_ratio}
-\title{Calculate LRV ratio}
+\title{Calculate desired LRV ratio}
 \usage{
 calc_desired_lrv_ratio(n)
 }

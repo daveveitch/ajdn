@@ -18,6 +18,20 @@ scales_rot<-function(n,p){
   return(s_rot)
 }
 
+#' \eqn{s'_\text{max}} rule of thumb
+#'
+#' @description Calculates rule of thumb values for \eqn{s'_\text{max}}
+#'
+#' @param n length of time series
+#' @return scalar number
+#' @export
+#' @examples
+#' ajdn::s_prime_max_rot(1000)
+s_prime_max_rot<-function(n){
+  return(round(n**(1/3)))
+}
+
+
 #' Sparsify scales
 #'
 #' @description Calculates a sparse sequence of scales \eqn{s_{r,1},\dots,s_{r,\delta_n}}
@@ -69,7 +83,7 @@ sparsify_scales<-function(s_low,s_high,n,p,max_scales=NULL,epsilon=.51){
   return(sparse_scales)
 }
 
-#' Calculate LRV ratio
+#' Calculate desired LRV ratio
 #'
 #' @description This funtion calculates the desired LRV ratio based on n (see Appendix B.1 on selection of hyperparameters for further description).
 #'
