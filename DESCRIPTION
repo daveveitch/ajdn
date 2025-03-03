@@ -1,6 +1,6 @@
 Package: ajdn
 Title: Asynchronous Jump Testing and Estimation in High Dimensions Under Complex Temporal Dynamics
-Version: 0.1.0
+Version: 0.2.0
 Authors@R: person("David", "Veitch", email = "david.veitch@mail.utoronto.ca",role = c("aut", "cre"))
 Description: R package for detecting jumps in high dimensional non-stationary time series. Based off of the paper https://arxiv.org/abs/2410.23706.
 License: MIT + file LICENSE
